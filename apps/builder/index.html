@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Builder Demo</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0px;
+        font-family: system-ui, sans-serif;
+        background: #141417;
+        color: #e8e8ec;
+      }
+      .layout {
+        display: flex;
+        height: 100vh;
+      }
+      #map {
+        flex: 1;
+        min-width: 0;
+        position: relative;
+      }
+      .sidebar {
+        width: 320px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        border-left: 1px solid #2b2b31;
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 12px;
+        margin: 0 0 6px;
+        color: #9a9aa5;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      label.check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      select,
+      button {
+        background: #232329;
+        color: #e8e8ec;
+        border: 1px solid #35353d;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .rule {
+        border: 1px solid #2b2b31;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .rule code {
+        color: #9a9aa5;
+        font-size: 11px;
+      }
+      #log {
+        flex: 1;
+        min-height: 160px;
+        font-size: 11px;
+        color: #c7c7cf;
+        background: #1c1c20;
+        border-radius: 6px;
+        padding: 8px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+      }
+      #host-panel {
+        position: absolute;
+        right: 16px;
+        bottom: 16px;
+        width: 220px;
+        background: #1c1c20;
+        border: 1px solid #3d5afe;
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 12px;
+        display: none;
+      }
+      #host-panel.open {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <div id="map">
+        <div id="host-panel">
+          <strong id="host-panel-title">POI Detail</strong>
+          <p id="host-panel-body" style="margin: 6px 0 8px"></p>
+          <button id="host-panel-close">Close</button>
+        </div>
+      </div>
+      <div class="sidebar">
+        <h1>Interactive Builder Demo</h1>
+
+        <section>
+          <h2>Camera</h2>
+          <label class="check"
+            ><input id="mode-3d" type="checkbox" /> 3D 모드</label
+          >
+          <label class="check"
+            ><input id="pan-enabled" type="checkbox" checked /> Pan 허용</label
+          >
+          <label class="check"
+            ><input id="zoom-enabled" type="checkbox" checked /> Zoom
+            허용</label
+          >
+          <div style="margin-top: 6px">
+            <button id="capture-camera">현재 카메라를 초기값으로 저장</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Theme</h2>
+          <label class="check" style="justify-content: space-between">
+            배경색
+            <input id="theme-background" type="color" value="#f5f5f7" />
+          </label>
+          <label
+            class="check"
+            style="justify-content: space-between; margin-top: 4px"
+          >
+            강조색 (POI 호버 / 경로)
+            <input id="theme-accent" type="color" value="#ffb03c" />
+          </label>
+        </section>
+
+        <section>
+          <h2>Event → Condition → Action Rules</h2>
+          <div class="rule">
+            <label class="check"
+              ><input id="rule-store" type="checkbox" checked /> Rule 1
+              활성화</label
+            >
+            <code>POI Click → type=store → Focus Camera + Open Panel</code>
+          </div>
+          <div class="rule">
+            <label class="check"
+              ><input id="rule-restroom" type="checkbox" checked /> Rule 2
+              활성화</label
+            >
+            <code>POI Click → type=restroom → Emit Custom Event</code>
+          </div>
+        </section>
+
+        <section
+          style="flex: 1; display: flex; flex-direction: column; min-height: 0"
+        >
+          <h2>Event / Action Log</h2>
+          <div id="log"></div>
+        </section>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

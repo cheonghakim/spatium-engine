@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Runtime SDK Playground</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0px;
+        font-family: system-ui, sans-serif;
+        background: #141417;
+        color: #e8e8ec;
+      }
+      .layout {
+        display: flex;
+        height: 100vh;
+      }
+      #map {
+        flex: 1;
+        min-width: 0;
+        position: relative;
+      }
+      .sidebar {
+        width: 280px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        border-left: 1px solid #2b2b31;
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 12px;
+        margin: 0 0 6px;
+        color: #9a9aa5;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      button {
+        background: #232329;
+        color: #e8e8ec;
+        border: 1px solid #35353d;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      button:hover {
+        background: #2c2c33;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      #log {
+        flex: 1;
+        min-height: 200px;
+        font-size: 11px;
+        color: #c7c7cf;
+        background: #1c1c20;
+        border-radius: 6px;
+        padding: 8px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <div id="map"></div>
+      <div class="sidebar">
+        <h1>Runtime SDK Playground</h1>
+
+        <section>
+          <h2>Floor</h2>
+          <div class="row" id="floor-buttons"></div>
+        </section>
+
+        <section>
+          <h2>Camera</h2>
+          <div class="row">
+            <button id="zoom-in">Zoom +</button>
+            <button id="zoom-out">Zoom -</button>
+            <button id="rotate">Rotate 15°</button>
+            <button id="toggle-3d">Toggle 2D/3D</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Marker</h2>
+          <div class="row">
+            <button id="add-marker">Add marker at center of first space</button>
+            <button id="clear-markers">Clear markers</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Route</h2>
+          <div class="row">
+            <button id="start-route">Start route (A → B)</button>
+            <button id="clear-route">Clear route</button>
+          </div>
+        </section>
+
+        <section
+          style="flex: 1; display: flex; flex-direction: column; min-height: 0"
+        >
+          <h2>Event log</h2>
+          <div id="log"></div>
+        </section>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
