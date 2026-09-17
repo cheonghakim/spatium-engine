@@ -61,6 +61,23 @@ export function validateEntrances(floor: Floor): ValidationIssue[] {
   const spaceIds = new Set(floor.spaces.map((s) => s.id));
 
   for (const entrance of floor.entrances) {
+    for (const key of ["width", "height", "depth", "stepCount"] as const) {
+      const value = entrance[key];
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0 || (key === "stepCount" && (!Number.isInteger(value) || value < 2 || value > 200)))) {
+        issues.push(issue("error", "invalid-element-dimension", `Element ${entrance.id}: invalid ${key}.`, entrance.id));
+      }
+    }
+    for (const key of ["sillHeight", "landingDepth", "rotation", "doorOpenAngle"] as const) {
+      const value = entrance[key];
+      if (value !== undefined && (!Number.isFinite(value) || (["sillHeight", "landingDepth"].includes(key) && value < 0))) {
+        issues.push(issue("error", "invalid-element-dimension", `Element ${entrance.id}: invalid ${key}.`, entrance.id));
+      }
+    }
+    const wall = floor.walls.find(w => w.id === entrance.wallId);
+    if (entrance.wallId && !wall) issues.push(issue("warning", "missing-host-wall", `Element ${entrance.id}: connected wall was removed.`, entrance.id));
+    if (wall && (entrance.height ?? (entrance.type === "window" ? 1.2 : 2.1)) + (entrance.type === "window" ? entrance.sillHeight ?? 0.9 : 0) > (wall.height ?? 2.4)) {
+      issues.push(issue("warning", "opening-above-wall", `Element ${entrance.id}: opening exceeds wall height and will be clipped.`, entrance.id));
+    }
     const hasA = entrance.spaceA !== undefined;
     const hasB = entrance.spaceB !== undefined;
 
@@ -84,7 +101,7 @@ export function validateEntrances(floor: Floor): ValidationIssue[] {
         ),
       );
     }
-    if (!hasA && !hasB) {
+    if (!hasA && !hasB && entrance.type !== "window") {
       issues.push(
         issue(
           "warning",

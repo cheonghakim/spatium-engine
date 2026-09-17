@@ -53,12 +53,7 @@ function addBuilding(): void {
 }
 .building-switcher select,
 .building-switcher button {
-  background: #232329;
-  color: #e8e8ec;
-  border: 1px solid #35353d;
-  border-radius: 6px;
   padding: 6px 10px;
-  cursor: pointer;
   font-size: 13px;
 }
 .add-building {

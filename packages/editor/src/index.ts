@@ -17,6 +17,7 @@ export { ReferenceManager } from "./reference/ReferenceManager.js";
 export type { ReferenceLayerState } from "./reference/ReferenceManager.js";
 
 export { DraftManager } from "./draft/DraftManager.js";
+export type { DraftElementEntry, DraftElementInput } from "./draft/DraftManager.js";
 export type { DraftState, DraftWallEntry, DraftSpaceEntry, DraftWallInput, DraftSpaceInput } from "./draft/DraftManager.js";
 
 export { LayerVisibilityManager } from "./layers/LayerVisibilityManager.js";

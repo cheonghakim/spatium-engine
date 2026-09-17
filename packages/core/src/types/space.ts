@@ -26,6 +26,9 @@ export interface Space {
   type: SpaceType;
 
   height: number;
+  /** Stair spaces rise along this plan direction (degrees). */
+  stairDirection?: number;
+  stairSteps?: number;
 
   properties: SpaceProperties;
 }

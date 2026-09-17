@@ -3,6 +3,7 @@ import { automaticThreshold, binarize, toGrayscale, type RawImage } from "./bina
 import { detectHorizontalSegments, detectVerticalSegments, mergeParallelSegments } from "./detectLines.js";
 import { buildPlanarGraph } from "./buildGraph.js";
 import { findFaces, selectRoomFaces } from "./findFaces.js";
+import { detectElements, type DraftElement } from "./detectElements.js";
 
 export interface VectorizeOptions {
   autoThreshold?: boolean;
@@ -30,6 +31,8 @@ export interface DraftWall {
 
 export interface DraftSpace {
   polygon: Point[];
+  /** Boundary crosses an inferred opening; requires explicit review. */
+  needsReview?: boolean;
 }
 
 export interface VectorizationWarning {
@@ -40,6 +43,7 @@ export interface VectorizationResult {
   walls: DraftWall[];
   spaces: DraftSpace[];
   warnings: VectorizationWarning[];
+  elements: DraftElement[];
 }
 
 const DEFAULTS: Required<VectorizeOptions> = {
@@ -87,7 +91,7 @@ export function vectorizeFloorPlan(
     warnings.push({
       message: "직선을 하나도 찾지 못했습니다. 이미지 대비가 낮거나 흑백 선 도면이 아닐 수 있습니다.",
     });
-    return { walls: [], spaces: [], warnings };
+    return { walls: [], spaces: [], elements: [], warnings };
   }
 
   const graph = buildPlanarGraph(segments, opts.snapTolerancePx);
@@ -98,15 +102,31 @@ export function vectorizeFloorPlan(
     thickness: Math.max(0.05, edge.thicknessPx * metersPerPixel),
   }));
 
-  const faces = findFaces(graph);
+  const elements = detectElements(walls);
+  // Close candidate openings only in the room topology, never in the detected wall output.
+  const worldPoints = graph.points.map(pixelToWorld);
+  const nearestNode = (point: Point) => worldPoints.reduce((best, p, i) =>
+    Math.hypot(p.x - point.x, p.y - point.y) < Math.hypot(worldPoints[best]!.x - point.x, worldPoints[best]!.y - point.y) ? i : best, 0);
+  const bridges = elements.flatMap(element => {
+    if (!element.supportWall) return [];
+    const from = nearestNode(element.supportWall.start), to = nearestNode(element.supportWall.end);
+    return from === to ? [] : [{ from, to, thicknessPx: element.supportWall.thickness / metersPerPixel }];
+  });
+  const faces = findFaces({ points: graph.points, edges: [...graph.edges, ...bridges] });
   const roomFaces = selectRoomFaces(faces, opts.minRoomAreaPx);
   const spaces: DraftSpace[] = roomFaces.map((face) => ({
     polygon: face.nodeIndices.map((i) => pixelToWorld(graph.points[i]!)),
+    ...(bridges.some(bridge => face.nodeIndices.some((node, i) => {
+      const next = face.nodeIndices[(i + 1) % face.nodeIndices.length];
+      return (node === bridge.from && next === bridge.to) || (node === bridge.to && next === bridge.from);
+    })) ? { needsReview: true } : {}),
   }));
 
   if (spaces.length === 0) {
     warnings.push({ message: "닫힌 방 형태를 찾지 못했습니다 — 벽만 초안으로 제공됩니다." });
   }
 
-  return { walls, spaces, warnings };
+  if (spaces.some(s => s.needsReview)) warnings.push({ message: "틈을 가상으로 연결해 추정한 방은 기본 제외했습니다. 방 윤곽을 확인하고 포함하세요." });
+  if (elements.length) warnings.push({ message: "건축 요소 후보는 기본 제외 상태입니다. 종류·치수·방향을 확인하고 포함하세요. 높이는 도면에서 추출하지 않습니다." });
+  return { walls, spaces, elements, warnings };
 }

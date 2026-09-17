@@ -116,12 +116,12 @@ h3 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 600;
-  color: #e8e8ec;
+  color: var(--text-primary);
 }
 .empty-hint {
   margin: 0;
   font-size: 12px;
-  color: #71717a;
+  color: var(--text-tertiary);
   line-height: 1.4;
 }
 .field {
@@ -129,22 +129,17 @@ h3 {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: #c7c7cf;
+  color: var(--text-secondary);
 }
 .field select {
-  background: #1c1c20;
-  color: #e8e8ec;
-  border: 1px solid #35353d;
-  border-radius: 6px;
-  padding: 6px 8px;
   font-size: 13px;
 }
 .checkbox-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
-  color: #c7c7cf;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .actions {
@@ -152,20 +147,16 @@ h3 {
   gap: 8px;
 }
 .actions button {
-  background: #232329;
-  color: #e8e8ec;
-  border: 1px solid #35353d;
-  border-radius: 6px;
+  flex: 1;
   padding: 6px 10px;
-  cursor: pointer;
   font-size: 12px;
 }
 .result {
   margin: 0;
   font-size: 12px;
-  color: #ffd83c;
+  color: var(--warning);
 }
 .result.error {
-  color: #ff6b6b;
+  color: var(--danger);
 }
 </style>

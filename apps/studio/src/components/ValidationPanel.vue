@@ -63,12 +63,12 @@ h3 {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #e8e8ec;
+  color: var(--text-primary);
 }
 .empty-hint {
   margin: 0;
   font-size: 12px;
-  color: #71717a;
+  color: var(--text-tertiary);
 }
 .issue-list {
   list-style: none;
@@ -84,33 +84,34 @@ h3 {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
-  color: #c7c7cf;
+  color: var(--text-secondary);
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .issue.clickable {
   cursor: pointer;
 }
 .issue.clickable:hover {
-  background: #232329;
+  background: var(--surface-2);
 }
 .badge {
   flex-shrink: 0;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 11px;
   font-weight: 600;
 }
 .issue.error .badge {
-  background: rgba(255, 107, 107, 0.2);
-  color: #ff6b6b;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .issue.warning .badge {
-  background: rgba(255, 200, 60, 0.2);
-  color: #ffc83c;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 .issue.info .badge {
-  background: rgba(90, 140, 255, 0.2);
-  color: #5a8cff;
+  background: var(--info-soft);
+  color: var(--info);
 }
 </style>

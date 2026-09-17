@@ -1,6 +1,7 @@
-import type { Floor, Point } from "@indoor/core";
+import { distanceToSegment, type Entrance, type Floor, type Point } from "@indoor/core";
 import type {
   DraftSpaceEntry,
+  DraftElementEntry,
   DraftWallEntry,
   EditorCamera,
   LayerId,
@@ -26,6 +27,7 @@ export interface RenderState {
   /** Auto-vectorized geometry awaiting human review (spec §16-18), drawn distinctly until confirmed. */
   draftWalls: readonly DraftWallEntry[];
   draftSpaces: readonly DraftSpaceEntry[];
+  draftElements?: readonly DraftElementEntry[];
   selectedDraftId?: string | null;
   showGrid?: boolean;
 }
@@ -127,7 +129,11 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
 
     if (state.layerVisibility.entrances) {
       for (const entrance of state.floor.entrances) {
-        drawDot(ctx, state.camera, entrance.position, COLORS.entrance);
+        const wall = state.floor.walls.filter(w => !entrance.wallId || w.id === entrance.wallId)
+          .map(w => ({ wall: w, distance: distanceToSegment(entrance.position, w.start, w.end).distance }))
+          .filter(hit => hit.distance < hit.wall.thickness / 2 + 0.2).sort((a,b) => a.distance - b.distance)[0]?.wall;
+        const rotation = wall && ['door','window','opening'].includes(entrance.type) ? Math.atan2(wall.end.y-wall.start.y,wall.end.x-wall.start.x)*180/Math.PI : entrance.rotation;
+        drawElement(ctx, state.camera, { ...entrance, ...(rotation !== undefined ? { rotation } : {}) }, state.selection.some(s => s.id === entrance.id) ? COLORS.wallSelected : COLORS.entrance);
       }
     }
 
@@ -176,12 +182,13 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
     }
   }
   for (const wall of state.draftWalls) {
+    const replaced = state.draftElements?.some(element => element.accepted && element.replacesWallIds.includes(wall.id));
     drawLine(
       ctx,
       state.camera,
       wall.start,
       wall.end,
-      wall.id === state.selectedDraftId ? '#7dd3fc' : wall.accepted ? COLORS.draftWallAccepted : COLORS.draftWallRejected,
+      wall.id === state.selectedDraftId ? '#7dd3fc' : wall.accepted && !replaced ? COLORS.draftWallAccepted : COLORS.draftWallRejected,
       Math.max(3, wall.thickness * 20),
       true,
     );
@@ -189,6 +196,10 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       drawVertexHandle(ctx, state.camera, wall.start, '#7dd3fc');
       drawVertexHandle(ctx, state.camera, wall.end, '#7dd3fc');
     }
+  }
+
+  for (const element of state.draftElements ?? []) {
+    drawElement(ctx, state.camera, element, element.id === state.selectedDraftId ? '#7dd3fc' : element.accepted ? '#ff9f3c' : '#bd94e8');
   }
 
   if (state.draftPoints.length > 0) {
@@ -201,6 +212,26 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
   for (const point of state.calibrationPoints) {
     drawDot(ctx, state.camera, point, COLORS.calibration, 5);
   }
+}
+
+function drawElement(ctx: CanvasRenderingContext2D, camera: EditorCamera,
+  element: Pick<Entrance, 'position' | 'type' | 'rotation' | 'width' | 'depth' | 'stepCount'>, color: string): void {
+  const angle = (element.rotation ?? 0) * Math.PI / 180, ux = Math.cos(angle), uy = Math.sin(angle);
+  const point = (x: number, y: number) => ({ x: element.position.x + ux*x - uy*y, y: element.position.y + uy*x + ux*y });
+  const width = element.width ?? (element.type === 'door' ? 0.9 : 1.2);
+  if (element.type === 'stairs' || element.type === 'escalator') {
+    const depth = element.depth ?? 4, count = Math.min(40, Math.max(2, element.stepCount ?? 12));
+    drawPolygon(ctx, camera, [point(-depth/2,-width/2),point(depth/2,-width/2),point(depth/2,width/2),point(-depth/2,width/2)], 'transparent', color, true);
+    for (let i=1;i<count;i++) drawLine(ctx,camera,point(-depth/2+depth*i/count,-width/2),point(-depth/2+depth*i/count,width/2),color,1);
+    drawLine(ctx,camera,point(-depth/3,0),point(depth/3,0),color,2);
+    drawLine(ctx,camera,point(depth/3,0),point(depth/3-0.2,0.15),color,2);
+    drawLine(ctx,camera,point(depth/3,0),point(depth/3-0.2,-0.15),color,2);
+  } else {
+    drawLine(ctx,camera,point(-width/2,0),point(width/2,0),color,3);
+    if (element.type === 'window') for (const offset of [-0.08,0.08]) drawLine(ctx,camera,point(-width/2,offset),point(width/2,offset),color,1);
+    if (element.type === 'door') drawLine(ctx,camera,point(-width/2,0),point(-width/2,width),color,2);
+  }
+  drawDot(ctx,camera,element.position,color,4);
 }
 
 function drawReference(

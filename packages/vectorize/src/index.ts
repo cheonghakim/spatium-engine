@@ -11,6 +11,7 @@ export type { PixelPoint, GraphEdge, PlanarGraph } from "./buildGraph.js";
 export { findFaces, selectRoomFaces } from "./findFaces.js";
 export type { Face } from "./findFaces.js";
 export { vectorizeFloorPlan } from "./vectorizeFloorPlan.js";
+export type { DraftElement } from "./detectElements.js";
 export type {
   VectorizeOptions,
   DraftWall,

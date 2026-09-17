@@ -29,6 +29,18 @@ function drawRectOutline(width: number, height: number, rect: { x: number; y: nu
 const identity = (p: { x: number; y: number }) => p;
 
 describe("vectorizeFloorPlan", () => {
+  it('proposes a reviewable floor across a doorway without turning the gap into a detected wall', () => {
+    const image = drawRectOutline(160, 120, {x:10,y:10,w:140,h:100}, 4);
+    for (let y=106;y<=110;y++) for(let x=65;x<85;x++) {
+      const index=(y*image.width+x)*4;
+      image.data[index]=255;image.data[index+1]=255;image.data[index+2]=255;
+    }
+    const result=vectorizeFloorPlan(image,p => ({x:p.x*0.05,y:-p.y*0.05}),{maxMergeGapPx:2});
+    expect(result.elements.some(e=>e.type==='opening')).toBe(true);
+    expect(result.spaces).toHaveLength(1);
+    expect(result.spaces[0]?.needsReview).toBe(true);
+    expect(result.walls).toHaveLength(5);
+  });
   it('does not treat a uniform gray scan background as a wall', () => {
     const data = new Uint8ClampedArray(40*40*4).fill(100);
     for (let i=3;i<data.length;i+=4) data[i]=255;

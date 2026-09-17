@@ -53,13 +53,21 @@ h3 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 600;
-  color: #e8e8ec;
+  color: var(--text-primary);
 }
 .layer-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 13px;
+  color: var(--text-secondary);
   cursor: pointer;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.layer-row:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
 }
 </style>

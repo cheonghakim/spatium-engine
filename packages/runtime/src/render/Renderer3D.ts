@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { distanceToSegment, type Entrance, type Floor, type POI, type Point, type Space, type SpaceType, type Wall } from "@indoor/core";
+import { type Entrance, type Floor, type POI, type Point, type Space, type SpaceType, type Wall } from "@indoor/core";
+import { buildArchitecture, stairSpaceGeometry } from "./architecture.js";
 import type { Overlay } from "../overlay.js";
 import type { RuntimeTheme } from "../theme.js";
 
@@ -52,13 +53,6 @@ const SPACE_COLORS: Record<SpaceType, number> = {
 };
 
 const POI_HOVER_SCALE = 1.4;
-const DEFAULT_WALL_HEIGHT = 2.4;
-const WALL_COLOR = 0xb8b8c0;
-const WALL_JOIN_EPSILON = 0.01;
-const ENTRANCE_COLOR = 0x3ddc84;
-const DOOR_WIDTH_METERS = 0.9;
-const DOOR_ATTACH_MARGIN_METERS = 0.2;
-const MIN_WALL_SEGMENT_METERS = 0.05;
 const WALK_SPEED_METERS_PER_SECOND = 1.3;
 const MIN_PLAYBACK_DURATION_SECONDS = 2;
 const MAX_PLAYBACK_DURATION_SECONDS = 40;
@@ -66,10 +60,6 @@ const THIRD_PERSON_BACK_METERS = 4;
 const THIRD_PERSON_HEIGHT_METERS = 2.5;
 const FIRST_PERSON_EYE_HEIGHT_METERS = 1.6;
 const MARKER_HEIGHT_METERS = 0.35;
-
-function pointsClose(a: Point, b: Point): boolean {
-  return Math.hypot(a.x - b.x, a.y - b.y) <= WALL_JOIN_EPSILON;
-}
 
 /**
  * Three.js scene built fresh from Core data every update() — meshes are
@@ -293,7 +283,9 @@ export class Renderer3D {
     this.rebuildPois(state.floor?.pois ?? []);
     this.rebuildOverlays(state.overlays, state.floor?.id);
     this.rebuildRoute(state.routePoints);
-    const hasGeometry = this.spaceGroup.children.length + this.wallGroup.children.length + this.entranceGroup.children.length > 0;
+    const bounds = new THREE.Box3().setFromObject(this.spaceGroup)
+      .union(new THREE.Box3().setFromObject(this.wallGroup)).union(new THREE.Box3().setFromObject(this.entranceGroup));
+    const hasGeometry = !bounds.isEmpty();
     if (hasGeometry && (this.fittedFloorId !== state.floor?.id || !this.hadGeometry)) this.fitView();
     this.fittedFloorId = state.floor?.id;
     this.hadGeometry = hasGeometry;
@@ -340,160 +332,31 @@ export class Renderer3D {
     for (const space of spaces) {
       if (space.polygon.length < 3) continue;
 
-      const shape = new THREE.Shape(space.polygon.map((p) => new THREE.Vector2(p.x, p.y)));
-      const geometry = new THREE.ExtrudeGeometry(shape, {
-        depth: space.height,
-        bevelEnabled: false,
-      });
-      geometry.rotateX(-Math.PI / 2);
-
-      const material = new THREE.MeshStandardMaterial({
-        color: SPACE_COLORS[space.type],
-        emissive: 0x000000,
-        transparent: true,
-        opacity: 0.85,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geometry, material);
-      this.spaceGroup.add(mesh);
-      this.spaceByMesh.set(mesh, space);
-
-      const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(geometry),
-        new THREE.LineBasicMaterial({ color: 0x333333 }),
-      );
-      this.spaceGroup.add(edges);
+      const geometries = space.type === "stairs" ? stairSpaceGeometry(space) : (() => {
+        const shape = new THREE.Shape(space.polygon.map(p => new THREE.Vector2(p.x, p.y)));
+        const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false });
+        geometry.rotateX(-Math.PI / 2);
+        geometry.translate(0, -0.08, 0);
+        return [geometry];
+      })();
+      for (const geometry of geometries) {
+        const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+          color: SPACE_COLORS[space.type], emissive: 0x000000, side: THREE.DoubleSide,
+        }));
+        this.spaceGroup.add(mesh);
+        this.spaceByMesh.set(mesh, space);
+        this.spaceGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry),
+          new THREE.LineBasicMaterial({ color: 0x666666 })));
+      }
     }
   }
 
-  /**
-   * Extrudes each wall into a real 3D box (thickness x height), using the
-   * same Shape -> ExtrudeGeometry -> rotateX(-90deg) pipeline as rooms so a
-   * floor plan with only walls (no closed Space yet) still shows something
-   * in 3D instead of an all-but-invisible flat line.
-   *
-   * Each wall is otherwise a square-cut rectangle aligned to its own
-   * direction, so two walls meeting at a corner (any angle, not just 90deg)
-   * leave a visible gap on one side and a jagged overlap on the other where
-   * the cuts don't line up. Extending a wall's own half-thickness past any
-   * endpoint it shares with another wall's endpoint (WALL_JOIN_EPSILON)
-   * closes that gap by fully covering the joint — a cheap miter
-   * approximation that's invisible since adjoining walls share material.
-   *
-   * Entrances sitting on (or very near) a wall cut a door-width gap in that
-   * wall instead of an unbroken box — this is the only renderer that models
-   * doors as actual 3D geometry (the 2D renderers just draw a dot), since
-   * before this a door never showed up in the 3D preview at all. Entrances
-   * with no nearby wall fall back to a small marker via
-   * rebuildUnattachedEntranceMarkers so they're still visible rather than
-   * silently missing.
-   */
   private rebuildWalls(walls: readonly Wall[], entrances: readonly Entrance[]): void {
     disposeGroup(this.wallGroup);
     disposeGroup(this.entranceGroup);
-    if (walls.length === 0) {
-      this.rebuildUnattachedEntranceMarkers(entrances);
-      return;
-    }
-
-    const material = new THREE.MeshStandardMaterial({ color: WALL_COLOR });
-    const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x333333 });
-    const sharesEndpoint = (point: Point, self: Wall) =>
-      walls.some(
-        (other) =>
-          other !== self &&
-          (pointsClose(other.start, point) || pointsClose(other.end, point)),
-      );
-
-    const addWallSegmentMesh = (start: Point, end: Point, nx: number, ny: number, height: number) => {
-      const corners = [
-        { x: start.x + nx, y: start.y + ny },
-        { x: end.x + nx, y: end.y + ny },
-        { x: end.x - nx, y: end.y - ny },
-        { x: start.x - nx, y: start.y - ny },
-      ];
-      const shape = new THREE.Shape(corners.map((c) => new THREE.Vector2(c.x, c.y)));
-      const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-      geometry.rotateX(-Math.PI / 2);
-      this.wallGroup.add(new THREE.Mesh(geometry, material));
-      this.wallGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry), edgeMaterial));
-    };
-
-    const attachedEntranceIds = new Set<string>();
-
-    for (const wall of walls) {
-      const dx = wall.end.x - wall.start.x;
-      const dy = wall.end.y - wall.start.y;
-      const length = Math.hypot(dx, dy);
-      if (length === 0) continue;
-
-      const halfThickness = wall.thickness / 2;
-      const ux = dx / length;
-      const uy = dy / length;
-      const nx = -uy * halfThickness;
-      const ny = ux * halfThickness;
-      const height = wall.height ?? DEFAULT_WALL_HEIGHT;
-
-      const extendedStart = sharesEndpoint(wall.start, wall)
-        ? { x: wall.start.x - ux * halfThickness, y: wall.start.y - uy * halfThickness }
-        : wall.start;
-      const extendedEnd = sharesEndpoint(wall.end, wall)
-        ? { x: wall.end.x + ux * halfThickness, y: wall.end.y + uy * halfThickness }
-        : wall.end;
-
-      // Door gaps as [from, to] distance-along-wall intervals, for every
-      // entrance close enough to this wall's centerline to count as "on" it.
-      const attachMargin = halfThickness + DOOR_ATTACH_MARGIN_METERS;
-      const gaps: Array<{ from: number; to: number }> = [];
-      for (const entrance of entrances) {
-        const hit = distanceToSegment(entrance.position, wall.start, wall.end);
-        if (hit.distance > attachMargin) continue;
-        attachedEntranceIds.add(entrance.id);
-        const t = (hit.point.x - wall.start.x) * ux + (hit.point.y - wall.start.y) * uy;
-        const doorWidth = Math.min(DOOR_WIDTH_METERS, length * 0.8);
-        gaps.push({ from: t - doorWidth / 2, to: t + doorWidth / 2 });
-      }
-
-      if (gaps.length === 0) {
-        addWallSegmentMesh(extendedStart, extendedEnd, nx, ny, height);
-        continue;
-      }
-
-      gaps.sort((a, b) => a.from - b.from);
-      let cursor = 0;
-      for (const gap of gaps) {
-        const gapFrom = Math.max(0, gap.from);
-        const gapTo = Math.min(length, gap.to);
-        if (gapFrom - cursor > MIN_WALL_SEGMENT_METERS) {
-          const segStart = cursor <= 0 ? extendedStart : { x: wall.start.x + ux * cursor, y: wall.start.y + uy * cursor };
-          const segEnd = { x: wall.start.x + ux * gapFrom, y: wall.start.y + uy * gapFrom };
-          addWallSegmentMesh(segStart, segEnd, nx, ny, height);
-        }
-        cursor = Math.max(cursor, gapTo);
-      }
-      if (length - cursor > MIN_WALL_SEGMENT_METERS) {
-        const segStart = { x: wall.start.x + ux * cursor, y: wall.start.y + uy * cursor };
-        addWallSegmentMesh(segStart, extendedEnd, nx, ny, height);
-      }
-    }
-
-    this.rebuildUnattachedEntranceMarkers(entrances, attachedEntranceIds);
-  }
-
-  /**
-   * Entrances that aren't close enough to any wall (e.g. placed before a
-   * wall existed, or the "not connected to any space" validation case) get
-   * a small visible marker instead of vanishing from the 3D view entirely.
-   */
-  private rebuildUnattachedEntranceMarkers(entrances: readonly Entrance[], attachedIds?: ReadonlySet<string>): void {
-    const geometry = new THREE.BoxGeometry(0.5, 1.4, 0.08);
-    const material = new THREE.MeshStandardMaterial({ color: ENTRANCE_COLOR });
-    for (const entrance of entrances) {
-      if (attachedIds?.has(entrance.id)) continue;
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(this.toGroundVector(entrance.position, 0.7));
-      this.entranceGroup.add(mesh);
-    }
+    const architecture = buildArchitecture(walls, entrances);
+    this.wallGroup.add(architecture.walls);
+    this.entranceGroup.add(architecture.elements);
   }
 
   private rebuildPois(pois: readonly POI[]): void {
@@ -633,6 +496,7 @@ function setSpaceEmissive(mesh: THREE.Object3D | null, color: number): void {
 function disposeGroup(group: THREE.Group): void {
   for (const child of [...group.children]) {
     group.remove(child);
+    if (child instanceof THREE.Group) disposeGroup(child);
     if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments) {
       child.geometry.dispose();
       const material = child.material;

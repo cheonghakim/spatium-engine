@@ -16,6 +16,8 @@ export class DraftReviewTool implements EditorTool {
     const state = this.draft.current;
     if (!state || (state.floorId && state.floorId !== this.context.getActiveFloor()?.id)) return;
     const radius = 10 / this.context.camera.getState().zoom;
+    const element = state.elements.find(e => distance(e.position, event.worldPoint) <= radius);
+    if (element) { this.draft.select(element.id); return; }
     const selectedWall = state.walls.find(w => w.id === this.draft.selectedId);
     if (selectedWall) {
       const handle = distance(selectedWall.start, event.worldPoint) <= radius ? 'start' : distance(selectedWall.end, event.worldPoint) <= radius ? 'end' : null;
@@ -81,5 +83,7 @@ export class DraftReviewTool implements EditorTool {
     const space = this.draft.current?.spaces.find(s => s.id === id);
     if (wall?.accepted) this.draft.toggleWall(wall.id);
     if (space?.accepted) this.draft.toggleSpace(space.id);
+    const element = this.draft.current?.elements.find(e => e.id === id);
+    if (element?.accepted) this.draft.toggleElement(element.id);
   }
 }

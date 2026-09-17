@@ -16,6 +16,43 @@ function setup() {
   return { editor, floor, building };
 }
 describe('vectorization review workflow', () => {
+  it('requires candidate review, previews the same geometry as confirmation and undoes the whole operation', () => {
+    const { editor, floor } = setup();
+    editor.draft.setDraft([{start:{x:0,y:0},end:{x:2,y:0},thickness:0.2}], [], [], floor.id, [{
+      type: 'opening', position: {x:2.5,y:0}, width:1, confidence:0.55, reason:'gap',
+      supportWall: {start:{x:2,y:0},end:{x:3,y:0},thickness:0.2},
+    }]);
+    const candidate = editor.draft.current!.elements[0]!;
+    editor.draft.setAllAccepted(true);
+    expect(candidate.accepted).toBe(false);
+    editor.draft.updateElement(candidate.id, {type:'window',sillHeight:0.8,height:1.2});
+    editor.draft.toggleElement(candidate.id);
+    const preview = editor.getPreviewProject().buildings[0]!.floors[0]!;
+    expect(preview.walls).toHaveLength(2);
+    expect(preview.entrances[0]).toMatchObject({type:'window',sillHeight:0.8,wallId:`${candidate.id}-support`});
+    editor.confirmDraft();
+    expect(floor.walls).toEqual(preview.walls);
+    expect(floor.entrances).toEqual(preview.entrances);
+    editor.undo();
+    expect(floor.walls).toHaveLength(0);
+    expect(floor.entrances).toHaveLength(0);
+    editor.redo();
+    expect(floor.entrances).toEqual(preview.entrances);
+  });
+  it('replaces stair strokes only after acceptance and restores them on draft undo', () => {
+    const { editor, floor } = setup();
+    editor.draft.setDraft([{start:{x:0,y:0},end:{x:1,y:0},thickness:0.04}], [], [], floor.id, [{
+      type:'stairs',position:{x:0.5,y:0},width:1,depth:2,confidence:0.65,reason:'treads',replacesWallIndices:[0],
+    }]);
+    const candidate = editor.draft.current!.elements[0]!;
+    expect(editor.draft.materialize(floor.id).walls).toHaveLength(1);
+    editor.draft.toggleElement(candidate.id);
+    expect(editor.draft.materialize(floor.id).walls).toHaveLength(0);
+    expect(editor.draft.materialize(floor.id).entrances).toHaveLength(1);
+    editor.draft.undo();
+    expect(editor.draft.materialize(floor.id).walls).toHaveLength(1);
+    expect(editor.draft.materialize(floor.id).entrances).toHaveLength(0);
+  });
   it('previews accepted draft geometry without confirming or changing history', () => {
     const {editor,floor} = setup();
     editor.draft.toggleWall(editor.draft.current!.walls[1]!.id);

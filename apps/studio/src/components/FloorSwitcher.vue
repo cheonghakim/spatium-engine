@@ -63,17 +63,8 @@ function addFloor(): void {
   gap: 4px;
 }
 .floor-switcher button {
-  background: #232329;
-  color: #e8e8ec;
-  border: 1px solid #35353d;
-  border-radius: 6px;
   padding: 6px 10px;
-  cursor: pointer;
   font-size: 13px;
-}
-.floor-switcher button.active {
-  background: #3d5afe;
-  border-color: #3d5afe;
 }
 .add-floor {
   font-weight: 600;

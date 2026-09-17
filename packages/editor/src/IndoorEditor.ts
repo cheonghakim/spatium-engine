@@ -1,6 +1,7 @@
-import { createSpace, createWall, type Floor, type IndoorProject, type Point } from "@indoor/core";
+import { type Floor, type IndoorProject, type Point } from "@indoor/core";
 import type { Command } from "./commands/Command.js";
 import { AddSpaceCommand } from "./commands/SpaceCommands.js";
+import { AddEntranceCommand } from "./commands/EntranceCommands.js";
 import { AddWallCommand } from "./commands/WallCommands.js";
 import { CompoundCommand } from './commands/CompoundCommand.js';
 import { DraftReviewTool } from './tools/DraftReviewTool.js';
@@ -129,18 +130,16 @@ export class IndoorEditor {
     const draft = this.draft.current;
     const floorId = draft?.floorId ?? this.getActiveFloor()?.id;
     if (!draft || !floorId) return this.project;
+    const geometry = this.draft.materialize(floorId);
     return {
       ...this.project,
       buildings: this.project.buildings.map(building => ({
         ...building,
         floors: building.floors.map(floor => floor.id !== floorId ? floor : {
           ...floor,
-          walls: [...floor.walls, ...draft.walls.filter(w => w.accepted).map(w => ({
-            ...createWall(floor.id, { ...w.start }, { ...w.end }, w.thickness), id: w.id,
-          }))],
-          spaces: [...floor.spaces, ...draft.spaces.filter(s => s.accepted).map(s => ({
-            ...createSpace(floor.id, s.polygon.map(p => ({ ...p }))), id: s.id,
-          }))],
+          walls: [...floor.walls, ...geometry.walls],
+          spaces: [...floor.spaces, ...geometry.spaces],
+          entrances: [...floor.entrances, ...geometry.entrances],
         }),
       })),
     };
@@ -190,16 +189,10 @@ export class IndoorEditor {
     if (draft.floorId && draft.floorId !== floor.id) return;
     const commands: Command[] = [];
 
-    for (const entry of draft.walls) {
-      if (!entry.accepted) continue;
-      const wall = createWall(floor.id, entry.start, entry.end, entry.thickness);
-      commands.push(new AddWallCommand(floor, wall));
-    }
-    for (const entry of draft.spaces) {
-      if (!entry.accepted) continue;
-      const space = createSpace(floor.id, entry.polygon);
-      commands.push(new AddSpaceCommand(floor, space));
-    }
+    const geometry = this.draft.materialize(floor.id);
+    for (const wall of geometry.walls) commands.push(new AddWallCommand(floor, wall));
+    for (const space of geometry.spaces) commands.push(new AddSpaceCommand(floor, space));
+    for (const entrance of geometry.entrances) commands.push(new AddEntranceCommand(floor, entrance));
 
     if (commands.length) this.executeCommand(new CompoundCommand('Apply vectorization', commands));
     this.draft.clear();

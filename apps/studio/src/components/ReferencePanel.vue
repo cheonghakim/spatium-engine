@@ -79,6 +79,7 @@ async function autoVectorize(): Promise<void> {
       result.spaces,
       result.warnings.map((w) => w.message),
       floorId,
+      result.elements,
     );
     props.editor.setTool('draft-review');
   } catch {
@@ -132,6 +133,7 @@ async function autoVectorize(): Promise<void> {
         {{ vectorizing ? "분석 중..." : hasDraft ? "다시 분석 (초안 교체)" : "자동 벡터화" }}
       </button>
       <p class="hint">수평·수직 벽을 감지합니다. 사선·곡선 벽은 직접 그려 보완해 주세요. 투명도와 화면 격자는 감지 결과에 영향을 주지 않습니다.</p>
+      <p class="hint">문·창문으로 쓸 벽 사이 틈과 계단 후보도 찾습니다. 먼저 축척을 보정하고, 검토 탭에서 후보 종류·치수·상행 방향을 확인하세요.</p>
       <p v-if="vectorizeError" class="error-text">{{ vectorizeError }}</p>
 
       <button class="remove-button" @click="removeReference">도면 제거</button>
@@ -140,12 +142,44 @@ async function autoVectorize(): Promise<void> {
 </template>
 
 <style scoped>
-.presets { display:flex; flex-wrap:wrap; gap:4px; }
-.presets button { padding:6px; font-size:11px; background:#252532; color:#ddd; border:1px solid #454555; border-radius:5px; cursor:pointer; }
-.settings { padding:10px; border:1px solid #35353d; border-radius:6px; }
-.settings summary { cursor:pointer; }
-.settings label { display:block; margin-top:12px; font-size:12px; }
-.settings input[type=range] { display:block; width:100%; margin:6px 0; }
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.presets button {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.settings {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.settings summary {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  justify-content: flex-start;
+}
+.settings summary:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+.settings label {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.settings input[type="range"] {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+}
 .reference-panel {
   display: flex;
   flex-direction: column;
@@ -155,18 +189,27 @@ h3 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 600;
-  color: #e8e8ec;
+  color: var(--text-primary);
 }
 .upload-button {
   position: relative;
-  display: inline-block;
-  background: #232329;
-  border: 1px solid #35353d;
-  border-radius: 6px;
-  padding: 8px 10px;
-  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
   text-align: center;
   font-size: 13px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.upload-button:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 .upload-button input {
   position: absolute;
@@ -175,12 +218,16 @@ h3 {
   width: 100%;
   cursor: pointer;
 }
-.upload-button:focus-within { outline: 2px solid #a5b4fc; outline-offset: 3px; }
+.upload-button:focus-within {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
 .opacity-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
+  color: var(--text-secondary);
 }
 .opacity-row input {
   flex: 1;
@@ -188,40 +235,39 @@ h3 {
 .scale-info {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #9a9aa5;
+  color: var(--text-tertiary);
 }
 .hint {
   margin: 0;
   font-size: 11px;
-  color: #71717a;
+  color: var(--text-tertiary);
   line-height: 1.4;
 }
 .remove-button {
-  background: #3a2323;
-  color: #ffb3b3;
-  border: 1px solid #5a3535;
-  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
   padding: 6px 10px;
-  cursor: pointer;
   font-size: 12px;
+}
+.remove-button:hover:not(:disabled) {
+  background: var(--danger-border);
 }
 .vectorize-button {
-  background: #2a2f23;
-  color: #d7ffb3;
-  border: 1px solid #45502f;
-  border-radius: 6px;
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid var(--success-border);
   padding: 6px 10px;
-  cursor: pointer;
   font-size: 12px;
+  font-weight: 600;
 }
-.vectorize-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.vectorize-button:hover:not(:disabled) {
+  background: var(--success-border);
 }
 .error-text {
   margin: 0;
   font-size: 11px;
-  color: #ff8080;
+  color: var(--danger);
   line-height: 1.4;
 }
 </style>

@@ -64,6 +64,7 @@ function draw(): void {
     pendingWallStart: currentPendingWallStart(),
     draftWalls: visibleDraft?.walls ?? [],
     draftSpaces: visibleDraft?.spaces ?? [],
+    draftElements: visibleDraft?.elements ?? [],
     selectedDraftId: props.editor.draft.selectedId,
     showGrid: showGrid.value,
   });
