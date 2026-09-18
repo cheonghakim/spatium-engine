@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { IndoorEditor } from "@indoor/editor";
+import type { NavigationNodeType } from "@indoor/core";
 
 const props = defineProps<{ editor: IndoorEditor }>();
+
+const NAV_NODE_TYPE_LABELS: Record<NavigationNodeType, string> = {
+  normal: "일반",
+  junction: "분기점",
+  entrance: "출입구",
+  stairs: "계단",
+  elevator: "엘리베이터",
+};
 
 const revision = ref(0);
 let unsubscribers: Array<() => void> = [];
@@ -17,12 +26,30 @@ onBeforeUnmount(() => {
   for (const unsubscribe of unsubscribers) unsubscribe();
 });
 
-// Spread into a new array: floor.navigation.nodes is mutated in place by
-// commands, so returning it directly would keep the same reference and
-// Vue's computed cache would never see a "change" to react to.
+// The owning Building, found the same way App.vue's syncHistoryState locates
+// the active floor's building — by scanning for the building whose floors
+// include the current active floor.
+const owningBuilding = computed(() => {
+  revision.value;
+  const floor = props.editor.getActiveFloor();
+  if (!floor) return undefined;
+  return props.editor.project.buildings.find((b) => b.floors.some((f) => f.id === floor.id));
+});
+
+// Routing can cross floors (a stairs/elevator edge links nodes on different
+// floors of the same building), so the picker offers every floor's nodes —
+// not just the active floor's — tagged with a { floor } entry for nodeLabel
+// to disambiguate nodes that would otherwise look identical across floors.
+// Spread each floor's nodes into a new array: floor.navigation.nodes is
+// mutated in place by commands, so returning it directly would keep the same
+// reference and Vue's computed cache would never see a "change" to react to.
 const nodes = computed(() => {
   revision.value;
-  return [...(props.editor.getActiveFloor()?.navigation.nodes ?? [])];
+  const building = owningBuilding.value;
+  if (!building) return [];
+  return building.floors.flatMap((floor) =>
+    [...floor.navigation.nodes].map((node) => ({ node, floor })),
+  );
 });
 
 const form = reactive({
@@ -51,9 +78,13 @@ function clearRoute(): void {
   props.editor.routePreview.clear();
 }
 
+/** Prefers the node's own name (if set) over its type + id fragment, matching PropertyPanel's navNodeLabel — an unnamed node still needs to be distinguishable from every other unnamed node of the same type. */
 function nodeLabel(id: string): string {
-  const node = nodes.value.find((n) => n.id === id);
-  return node ? `${node.type} · ${id.slice(0, 6)}` : id.slice(0, 6);
+  const entry = nodes.value.find((n) => n.node.id === id);
+  if (!entry) return id.slice(0, 6);
+  const name =
+    entry.node.name?.trim() || `${NAV_NODE_TYPE_LABELS[entry.node.type]} (${id.slice(0, 6)})`;
+  return `${entry.floor.name} · ${name}`;
 }
 </script>
 
@@ -70,8 +101,8 @@ function nodeLabel(id: string): string {
         출발 노드
         <select v-model="form.startNodeId">
           <option value="" disabled>선택</option>
-          <option v-for="node in nodes" :key="node.id" :value="node.id">
-            {{ nodeLabel(node.id) }}
+          <option v-for="entry in nodes" :key="entry.node.id" :value="entry.node.id">
+            {{ nodeLabel(entry.node.id) }}
           </option>
         </select>
       </label>
@@ -79,13 +110,15 @@ function nodeLabel(id: string): string {
         도착 노드
         <select v-model="form.endNodeId">
           <option value="" disabled>선택</option>
-          <option v-for="node in nodes" :key="node.id" :value="node.id">
-            {{ nodeLabel(node.id) }}
+          <option v-for="entry in nodes" :key="entry.node.id" :value="entry.node.id">
+            {{ nodeLabel(entry.node.id) }}
           </option>
         </select>
       </label>
 
-      <label class="checkbox-row"><input v-model="form.avoidStairs" type="checkbox" /> 계단 회피</label>
+      <label class="checkbox-row"
+        ><input v-model="form.avoidStairs" type="checkbox" /> 계단 회피</label
+      >
       <label class="checkbox-row">
         <input v-model="form.requireAccessible" type="checkbox" /> 접근 가능 경로만
       </label>
@@ -100,7 +133,8 @@ function nodeLabel(id: string): string {
 
       <p v-if="preview && !preview.result" class="result error">경로를 찾을 수 없습니다.</p>
       <p v-else-if="preview?.result" class="result">
-        거리: {{ preview.result.distance.toFixed(1) }} m · {{ preview.result.nodeIds.length }}개 노드
+        거리: {{ preview.result.distance.toFixed(1) }} m · {{ preview.result.nodeIds.length }}개
+        노드
       </p>
     </template>
   </div>

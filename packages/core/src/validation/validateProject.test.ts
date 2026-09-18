@@ -125,6 +125,80 @@ describe("validateProject", () => {
     expect(issues.filter((i) => i.type === "missing-floor-connection")).toHaveLength(2);
   });
 
+  it("does not flag a cross-floor stairs edge as broken, or its nodes as disconnected", () => {
+    // A stairs/elevator edge legitimately connects a node on one floor to a
+    // node on another (see mergeGraph.ts); the edge itself is stored in one
+    // floor's edge list (here, floor1's). validateNavigation used to only
+    // check edge.from/edge.to against that floor's own nodes, so this used
+    // to be wrongly flagged as a broken-navigation-edge, and both nodes as
+    // disconnected-navigation-node.
+    const project = createEmptyProject("P");
+    const building = createBuilding("B1");
+    const floor1 = createFloor("1F", 1);
+    const floor2 = createFloor("2F", 2);
+
+    const groundNode = {
+      id: "ground-stairs",
+      floorId: floor1.id,
+      position: { x: 0, y: 0 },
+      type: "stairs" as const,
+    };
+    const upperNode = {
+      id: "upper-stairs",
+      floorId: floor2.id,
+      position: { x: 0, y: 0 },
+      type: "stairs" as const,
+    };
+    // Extra same-floor nodes so the `nodes.length > 1` disconnected-node
+    // check actually runs on both floors.
+    const groundOther = {
+      id: "ground-other",
+      floorId: floor1.id,
+      position: { x: 5, y: 0 },
+      type: "normal" as const,
+    };
+    const upperOther = {
+      id: "upper-other",
+      floorId: floor2.id,
+      position: { x: 5, y: 0 },
+      type: "normal" as const,
+    };
+
+    floor1.navigation.nodes.push(groundNode, groundOther);
+    floor2.navigation.nodes.push(upperNode, upperOther);
+    floor1.navigation.edges.push({
+      id: "stairs-edge",
+      from: groundNode.id,
+      to: upperNode.id,
+      type: "stairs",
+      distance: 3,
+      accessible: true,
+    });
+    floor1.navigation.edges.push({
+      id: "ground-local",
+      from: groundNode.id,
+      to: groundOther.id,
+      type: "walk",
+      distance: 5,
+      accessible: true,
+    });
+    floor2.navigation.edges.push({
+      id: "upper-local",
+      from: upperNode.id,
+      to: upperOther.id,
+      type: "walk",
+      distance: 5,
+      accessible: true,
+    });
+
+    building.floors.push(floor1, floor2);
+    project.buildings.push(building);
+
+    const issues = validateProject(project);
+    expect(issues.filter((i) => i.type === "broken-navigation-edge")).toHaveLength(0);
+    expect(issues.filter((i) => i.type === "disconnected-navigation-node")).toHaveLength(0);
+  });
+
   it("returns no issues for a valid, well-connected project", () => {
     const project = createEmptyProject("P");
     const building = createBuilding("B1");

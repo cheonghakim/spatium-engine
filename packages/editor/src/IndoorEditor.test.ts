@@ -1,7 +1,14 @@
-import { createBuilding, createEmptyProject, createFloor, type Point } from "@indoor/core";
+import {
+  createBuilding,
+  createEmptyProject,
+  createEntrance,
+  createFloor,
+  type Point,
+} from "@indoor/core";
 import { describe, expect, it, vi } from "vitest";
 import { IndoorEditor } from "./IndoorEditor.js";
 import { ChangePropertyCommand } from "./commands/PropertyCommands.js";
+import { AddEntranceCommand } from "./commands/EntranceCommands.js";
 import { AddFloorCommand } from "./commands/FloorCommands.js";
 import { AddBuildingCommand } from "./commands/BuildingCommands.js";
 import type { EditorPointerEvent } from "./tools/EditorTool.js";
@@ -40,20 +47,20 @@ function makeEditorWithFloor() {
 describe("IndoorEditor", () => {
   it("discards unfinished geometry when switching floors", () => {
     const { editor, building } = makeEditorWithFloor();
-    const next = createFloor('2F', 2);
+    const next = createFloor("2F", 2);
     building.floors.push(next);
-    editor.setTool('polygon');
+    editor.setTool("polygon");
     editor.handlePointerDown(click({ x: 0, y: 0 }));
     editor.handlePointerDown(click({ x: 4, y: 0 }));
     editor.setFloor(next.id);
     editor.handlePointerDown(click({ x: 4, y: 4 }));
-    editor.handleKeyDown({ key: 'Enter', shiftKey: false, ctrlKey: false, altKey: false });
+    editor.handleKeyDown({ key: "Enter", shiftKey: false, ctrlKey: false, altKey: false });
     expect(next.spaces).toHaveLength(0);
   });
 
   it("restores a valid editing floor after undoing an added floor", () => {
     const { editor, building, floor } = makeEditorWithFloor();
-    const next = createFloor('2F', 2);
+    const next = createFloor("2F", 2);
     editor.executeCommand(new AddFloorCommand(building, next));
     editor.setFloor(next.id);
     editor.undo();
@@ -256,6 +263,11 @@ describe("IndoorEditor", () => {
     expect(floor.navigation.nodes).toHaveLength(2);
 
     const [nodeA, nodeB] = floor.navigation.nodes;
+    // Each node gets a distinct default name (not just a type + random id) so
+    // it's recognizable anywhere it's listed (route start/end pickers,
+    // cross-floor link pickers) without requiring the user to rename it first.
+    expect(nodeA!.name).toBe("노드 1");
+    expect(nodeB!.name).toBe("노드 2");
 
     editor.setTool("navigation-edge");
     editor.handlePointerDown(click(nodeA!.position));
@@ -447,5 +459,403 @@ describe("IndoorEditor", () => {
 
     editor.undo();
     expect(editor.project.buildings).toEqual([building]);
+  });
+
+  it("cascades a Space delete to clear dangling Entrance and POI references, and undoes as one step", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    drawSquare(editor);
+    const space = floor.spaces[0]!;
+
+    editor.setTool("door");
+    editor.handlePointerDown(click({ x: 4, y: 2 })); // sits exactly on the square's right edge
+    const entrance = floor.entrances[0]!;
+    expect(entrance.spaceA).toBe(space.id);
+
+    editor.setTool("poi");
+    editor.handlePointerDown(click({ x: 2, y: 2 }));
+    const poi = floor.pois[0]!;
+    expect(poi.spaceId).toBe(space.id);
+
+    editor.setTool("select");
+    editor.selection.select(space.id);
+    editor.handleKeyDown({ key: "Delete", shiftKey: false, ctrlKey: false, altKey: false });
+
+    expect(floor.spaces).toHaveLength(0);
+    expect(entrance.spaceA).toBeUndefined();
+    expect(poi.spaceId).toBeUndefined();
+
+    editor.undo();
+    expect(floor.spaces).toHaveLength(1);
+    expect(entrance.spaceA).toBe(space.id);
+    expect(poi.spaceId).toBe(space.id);
+  });
+
+  it("cascades a NavigationNode delete to remove edges referencing it, and undoes as one step", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    editor.handlePointerDown(click({ x: 3, y: 0 }));
+    editor.handlePointerDown(click({ x: 0, y: 3 }));
+    const [nodeA, nodeB, nodeC] = floor.navigation.nodes;
+
+    editor.setTool("navigation-edge");
+    editor.handlePointerDown(click(nodeA!.position));
+    editor.handlePointerDown(click(nodeB!.position));
+    editor.handlePointerDown(click(nodeA!.position));
+    editor.handlePointerDown(click(nodeC!.position));
+    expect(floor.navigation.edges).toHaveLength(2);
+
+    editor.setTool("select");
+    editor.selection.select(nodeA!.id);
+    editor.handleKeyDown({ key: "Delete", shiftKey: false, ctrlKey: false, altKey: false });
+
+    expect(floor.navigation.nodes).toHaveLength(2);
+    expect(floor.navigation.edges).toHaveLength(0);
+
+    editor.undo();
+    expect(floor.navigation.nodes).toHaveLength(3);
+    expect(floor.navigation.edges).toHaveLength(2);
+  });
+
+  it("cascades a Wall delete to clear an Entrance's wallId without deleting the Entrance", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    editor.setTool("wall");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    editor.handlePointerDown(click({ x: 4, y: 0 }));
+    const wall = floor.walls[0]!;
+
+    const entrance = createEntrance(floor.id, { x: 2, y: 0 }, "door");
+    entrance.wallId = wall.id;
+    editor.executeCommand(new AddEntranceCommand(floor, entrance));
+
+    editor.setTool("select");
+    editor.selection.select(wall.id);
+    editor.handleKeyDown({ key: "Delete", shiftKey: false, ctrlKey: false, altKey: false });
+
+    expect(floor.walls).toHaveLength(0);
+    expect(floor.entrances).toHaveLength(1);
+    expect(entrance.wallId).toBeUndefined();
+
+    editor.undo();
+    expect(floor.walls).toHaveLength(1);
+    expect(entrance.wallId).toBe(wall.id);
+  });
+
+  it("linkFloorNode connects nodes on different floors, replaces the old link on re-link, and unlinks with null", () => {
+    const { editor, building, floor } = makeEditorWithFloor();
+    const second = createFloor("2F", 2);
+    editor.executeCommand(new AddFloorCommand(building, second));
+
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    const nodeA = floor.navigation.nodes[0]!;
+
+    editor.setFloor(second.id);
+    editor.handlePointerDown(click({ x: 3, y: 4 }));
+    editor.handlePointerDown(click({ x: 10, y: 10 }));
+    const [nodeB, nodeC] = second.navigation.nodes;
+
+    editor.linkFloorNode(nodeA.id, nodeB!.id, "elevator");
+    expect(floor.navigation.edges).toHaveLength(1);
+    expect(floor.navigation.edges[0]).toMatchObject({
+      from: nodeA.id,
+      to: nodeB!.id,
+      type: "elevator",
+    });
+    expect(floor.navigation.edges[0]?.distance).toBeCloseTo(5); // 3-4-5 triangle from (0,0) to (3,4)
+
+    editor.linkFloorNode(nodeA.id, nodeC!.id, "stairs");
+    expect(floor.navigation.edges).toHaveLength(1); // old link replaced, not accumulated
+    expect(floor.navigation.edges[0]).toMatchObject({
+      from: nodeA.id,
+      to: nodeC!.id,
+      type: "stairs",
+    });
+
+    editor.linkFloorNode(nodeA.id, null, "walk");
+    expect(floor.navigation.edges).toHaveLength(0);
+  });
+
+  it("undoes linkFloorNode as a single step, restoring the previous cross-floor edge", () => {
+    const { editor, building, floor } = makeEditorWithFloor();
+    const second = createFloor("2F", 2);
+    editor.executeCommand(new AddFloorCommand(building, second));
+
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    const nodeA = floor.navigation.nodes[0]!;
+
+    editor.setFloor(second.id);
+    editor.handlePointerDown(click({ x: 3, y: 4 }));
+    editor.handlePointerDown(click({ x: 10, y: 10 }));
+    const [nodeB, nodeC] = second.navigation.nodes;
+
+    editor.linkFloorNode(nodeA.id, nodeB!.id, "elevator");
+    editor.linkFloorNode(nodeA.id, nodeC!.id, "stairs");
+
+    editor.undo();
+    expect(floor.navigation.edges).toHaveLength(1);
+    expect(floor.navigation.edges[0]).toMatchObject({
+      from: nodeA.id,
+      to: nodeB!.id,
+      type: "elevator",
+    });
+
+    editor.undo();
+    expect(floor.navigation.edges).toHaveLength(0);
+  });
+
+  it("linkFloorNode enforces at-most-one-cross-floor-edge from the TARGET side too, not just the source", () => {
+    // Reproduces the reported bug: linking A (floor1) to B (floor2) creates
+    // A-B. Separately linking C (floor3) to that SAME node B must replace
+    // the stale A-B edge, not leave B with two simultaneous cross-floor
+    // edges — even though B is the *target*, not the *source*, of either
+    // call, and the exclusivity check historically only looked at the
+    // source side.
+    const { editor, building, floor } = makeEditorWithFloor();
+    const second = createFloor("2F", 2);
+    const third = createFloor("3F", 3);
+    editor.executeCommand(new AddFloorCommand(building, second));
+    editor.executeCommand(new AddFloorCommand(building, third));
+
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    const nodeA = floor.navigation.nodes[0]!;
+
+    editor.setFloor(second.id);
+    editor.handlePointerDown(click({ x: 3, y: 4 }));
+    const nodeB = second.navigation.nodes[0]!;
+
+    editor.setFloor(third.id);
+    editor.handlePointerDown(click({ x: 10, y: 10 }));
+    const nodeC = third.navigation.nodes[0]!;
+
+    const edgesTouching = (nodeId: string) =>
+      building.floors
+        .flatMap((f) => f.navigation.edges)
+        .filter((e) => e.from === nodeId || e.to === nodeId);
+
+    editor.linkFloorNode(nodeA.id, nodeB.id, "stairs"); // A - B
+    expect(edgesTouching(nodeB.id)).toHaveLength(1);
+
+    editor.linkFloorNode(nodeC.id, nodeB.id, "stairs"); // C - B, called with B as the TARGET this time
+    const bEdges = edgesTouching(nodeB.id);
+    expect(bEdges).toHaveLength(1); // exactly one cross-floor edge touches B, never two
+    expect(bEdges[0]).toMatchObject({ from: nodeC.id, to: nodeB.id, type: "stairs" }); // most recent link wins
+    expect(edgesTouching(nodeA.id)).toHaveLength(0); // the stale A-B edge is gone
+
+    editor.linkFloorNode(nodeB.id, null, "stairs"); // unlink B
+    expect(edgesTouching(nodeB.id)).toHaveLength(0);
+    expect(edgesTouching(nodeA.id)).toHaveLength(0);
+    expect(edgesTouching(nodeC.id)).toHaveLength(0); // nothing dangling on any of the three nodes
+  });
+
+  it("undoes the target-side exclusivity replacement (spanning two floors' edge arrays) as one atomic step", () => {
+    const { editor, building, floor } = makeEditorWithFloor();
+    const second = createFloor("2F", 2);
+    const third = createFloor("3F", 3);
+    editor.executeCommand(new AddFloorCommand(building, second));
+    editor.executeCommand(new AddFloorCommand(building, third));
+
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    const nodeA = floor.navigation.nodes[0]!;
+
+    editor.setFloor(second.id);
+    editor.handlePointerDown(click({ x: 3, y: 4 }));
+    const nodeB = second.navigation.nodes[0]!;
+
+    editor.setFloor(third.id);
+    editor.handlePointerDown(click({ x: 10, y: 10 }));
+    const nodeC = third.navigation.nodes[0]!;
+
+    const edgesTouching = (nodeId: string) =>
+      building.floors
+        .flatMap((f) => f.navigation.edges)
+        .filter((e) => e.from === nodeId || e.to === nodeId);
+
+    editor.linkFloorNode(nodeA.id, nodeB.id, "stairs"); // A - B, stored on floor 1's (source's) edges array
+    editor.linkFloorNode(nodeC.id, nodeB.id, "stairs"); // one compound command: delete A-B (floor1 array) + add C-B (floor3 array)
+
+    expect(edgesTouching(nodeB.id)).toHaveLength(1);
+    expect(edgesTouching(nodeB.id)[0]).toMatchObject({ from: nodeC.id });
+
+    editor.undo(); // a single undo must revert the whole compound step
+    expect(edgesTouching(nodeC.id)).toHaveLength(0); // C-B removed
+    const restored = edgesTouching(nodeA.id);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ from: nodeA.id, to: nodeB.id, type: "stairs" }); // A-B restored
+    expect(edgesTouching(nodeB.id)).toHaveLength(1);
+  });
+
+  it("cascades a NavigationNode delete to a cross-floor edge stored on the OTHER floor (F1)", () => {
+    // linkFloorNode stores the new edge on the SOURCE node's floor (see its
+    // docstring). Here nodeA (floor 1) is the source and nodeB (floor 2) is
+    // the target, so the edge lives on floor 1's array. Deleting nodeB while
+    // floor 2 is active must still find and clean up that edge on floor 1 —
+    // the bug this reproduces only scanned the active floor's own edges.
+    const { editor, building, floor } = makeEditorWithFloor();
+    const second = createFloor("2F", 2);
+    editor.executeCommand(new AddFloorCommand(building, second));
+
+    editor.setTool("navigation-node");
+    editor.handlePointerDown(click({ x: 0, y: 0 }));
+    const nodeA = floor.navigation.nodes[0]!;
+
+    editor.setFloor(second.id);
+    editor.handlePointerDown(click({ x: 3, y: 4 }));
+    const nodeB = second.navigation.nodes[0]!;
+
+    editor.linkFloorNode(nodeA.id, nodeB.id, "elevator");
+    expect(floor.navigation.edges).toHaveLength(1); // stored on the source's (floor 1) array
+    const edgeId = floor.navigation.edges[0]!.id;
+
+    editor.setTool("select"); // active floor is still floor 2 (second)
+    editor.selection.select(nodeB.id);
+    editor.handleKeyDown({ key: "Delete", shiftKey: false, ctrlKey: false, altKey: false });
+
+    expect(second.navigation.nodes).toHaveLength(0);
+    expect(floor.navigation.edges).toHaveLength(0); // dangling cross-floor edge cleaned up
+
+    editor.undo();
+    expect(second.navigation.nodes).toHaveLength(1);
+    expect(second.navigation.nodes[0]?.id).toBe(nodeB.id);
+    expect(floor.navigation.edges).toHaveLength(1);
+    expect(floor.navigation.edges[0]).toMatchObject({
+      id: edgeId,
+      from: nodeA.id,
+      to: nodeB.id,
+      type: "elevator",
+    });
+  });
+
+  it("routes undo to main history after a normal edit follows a draft edit, even with the draft still pending (F2)", () => {
+    const { editor, floor } = makeEditorWithFloor();
+
+    editor.draft.setDraft(
+      [{ start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, thickness: 0.2 }],
+      [],
+      [],
+      floor.id,
+    );
+    editor.setTool("draft-review");
+    editor.handlePointerDown(click({ x: 2, y: 0 })); // grabs the wall body (midpoint)
+    editor.handlePointerMove(click({ x: 3, y: 2 }));
+    editor.handlePointerUp(click({ x: 3, y: 2 }));
+    expect(editor.draft.canUndo).toBe(true);
+    expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 1, y: 2 });
+
+    // Switch to an unrelated tool and perform a normal, main-history edit
+    // while the draft is still pending/unconfirmed.
+    drawSquare(editor);
+    expect(floor.spaces).toHaveLength(1);
+
+    editor.undo();
+
+    // The most recently touched stack was main history (the square), so undo
+    // should undo THAT, leaving the draft's own pending edit untouched.
+    expect(floor.spaces).toHaveLength(0);
+    expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 1, y: 2 });
+  });
+
+  it("loadProject swaps the project and resets history, selection, draft, and floor", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    drawSquare(editor);
+    editor.selection.select(floor.spaces[0]!.id);
+    editor.draft.setDraft(
+      [{ start: { x: 0, y: 0 }, end: { x: 1, y: 0 }, thickness: 0.2 }],
+      [],
+      [],
+      floor.id,
+    );
+    expect(editor.history.canUndo).toBe(true);
+
+    const nextProject = createEmptyProject("Other Mall");
+    const nextBuilding = createBuilding("B2");
+    const nextFloor = createFloor("G", 0);
+    nextBuilding.floors.push(nextFloor);
+    nextProject.buildings.push(nextBuilding);
+
+    const handler = vi.fn();
+    editor.on("projectLoaded", handler);
+
+    editor.loadProject(nextProject);
+
+    expect(editor.project).toBe(nextProject);
+    expect(editor.getActiveFloor()?.id).toBe(nextFloor.id);
+    expect(editor.selection.current).toHaveLength(0);
+    expect(editor.draft.hasDraft).toBe(false);
+    expect(editor.history.canUndo).toBe(false);
+    editor.undo(); // should be a no-op now that history was reset
+    expect(editor.history.canUndo).toBe(false);
+    expect(handler).toHaveBeenCalledWith(nextProject);
+  });
+
+  it("loadProject sets the active floor to null when the new project has no floors", () => {
+    const { editor } = makeEditorWithFloor();
+    editor.loadProject(createEmptyProject("Empty"));
+    expect(editor.getActiveFloor()).toBeUndefined();
+  });
+
+  it("loadProject resets the camera to its default pan/zoom state", () => {
+    const { editor } = makeEditorWithFloor();
+    const defaultState = editor.camera.getState();
+
+    editor.camera.panByScreenDelta({ x: 500, y: -300 });
+    editor.camera.zoomBy(4);
+    expect(editor.camera.getState()).not.toEqual(defaultState);
+
+    editor.loadProject(createEmptyProject("Other Mall"));
+
+    expect(editor.camera.getState()).toEqual(defaultState);
+  });
+
+  it("routes undo to the draft stack whenever a draft is pending, even after switching tools", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    drawSquare(editor); // records a command in the main history stack
+
+    editor.draft.setDraft(
+      [{ start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, thickness: 0.2 }],
+      [],
+      [],
+      floor.id,
+    );
+    editor.setTool("draft-review");
+    editor.handlePointerDown(click({ x: 2, y: 0 })); // grabs the wall body (midpoint)
+    editor.handlePointerMove(click({ x: 3, y: 2 }));
+    editor.handlePointerUp(click({ x: 3, y: 2 }));
+    expect(editor.draft.canUndo).toBe(true);
+    expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 1, y: 2 });
+
+    editor.setTool("select"); // switch away from draft-review while the draft is still pending
+    editor.undo();
+
+    expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 0, y: 0 });
+    expect(floor.spaces).toHaveLength(1); // drawSquare's Space is on the main history stack, untouched
+  });
+
+  it("falls through to main history when a freshly opened draft has nothing of its own to undo", () => {
+    // Regression test: setDraft() resets the draft's own past/future to
+    // empty, so right after opening a fresh draft (e.g. re-running
+    // auto-vectorization) there is nothing undoable in the draft yet, even
+    // though it becomes the most recently loaded/changed thing. undo() must
+    // not silently no-op by unconditionally routing into the empty draft
+    // stack — it must fall through to main history instead.
+    const { editor, floor } = makeEditorWithFloor();
+    drawSquare(editor); // records a command in the main history stack
+    expect(floor.spaces).toHaveLength(1);
+
+    editor.draft.setDraft(
+      [{ start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, thickness: 0.2 }],
+      [],
+      [],
+      floor.id,
+    );
+    expect(editor.draft.hasDraft).toBe(true);
+    expect(editor.draft.canUndo).toBe(false); // nothing has been done to the draft yet
+
+    editor.undo();
+
+    expect(floor.spaces).toHaveLength(0); // the main-history edit was undone, not silently swallowed
   });
 });

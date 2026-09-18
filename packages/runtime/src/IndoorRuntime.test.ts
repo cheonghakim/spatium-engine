@@ -122,7 +122,14 @@ describe("IndoorRuntime", () => {
       { id: "a", floorId: floor.id, position: { x: 0, y: 0 }, type: "normal" },
       { id: "b", floorId: floor.id, position: { x: 3, y: 4 }, type: "normal" },
     );
-    floor.navigation.edges.push({ id: "e1", from: "a", to: "b", type: "walk", distance: 5, accessible: true });
+    floor.navigation.edges.push({
+      id: "e1",
+      from: "a",
+      to: "b",
+      type: "walk",
+      distance: 5,
+      accessible: true,
+    });
 
     const runtime = new IndoorRuntime({ container, project });
     await Promise.resolve();
@@ -161,6 +168,36 @@ describe("IndoorRuntime", () => {
     // A point inside the space but far from the POI (e.g. world (0.5, 0.5) -> screen (25, -25))
     canvas.dispatchEvent(new MouseEvent("click", { clientX: 25, clientY: -25 }));
     expect(spaceHandler).toHaveBeenCalledWith({ space });
+  });
+
+  it("setCameraMode('3d') degrades gracefully when Renderer3D construction fails (jsdom has no real WebGL, so `new THREE.WebGLRenderer(...)` throws there without any mocking)", () => {
+    const runtime = new IndoorRuntime({ container });
+
+    const unavailableHandler = vi.fn();
+    const cameraChangedHandler = vi.fn();
+    runtime.on("render3d.unavailable", unavailableHandler);
+    runtime.on("camera.changed", cameraChangedHandler);
+
+    expect(() => runtime.setCameraMode("3d")).not.toThrow();
+
+    expect(unavailableHandler).toHaveBeenCalledTimes(1);
+    const payload = unavailableHandler.mock.calls[0]?.[0];
+    expect(typeof payload.message).toBe("string");
+    expect(payload.message.length).toBeGreaterThan(0);
+
+    // Nothing about the camera mode actually changed: no camera.changed was emitted, and the 2D
+    // canvas (the only one that exists — Renderer3D's own canvas never got created) stays visible.
+    expect(cameraChangedHandler).not.toHaveBeenCalled();
+    const canvas = container.querySelector("canvas")!;
+    expect(canvas.style.display).toBe("block");
+    expect(container.querySelectorAll("canvas")).toHaveLength(1);
+
+    // If cameraMode had incorrectly flipped to "3d" internally despite the construction failure,
+    // this second call would see mode === this.cameraMode and bail out as a no-op, never
+    // re-attempting Renderer3D construction — so a second render3d.unavailable proves the mode
+    // genuinely stayed "2d".
+    expect(() => runtime.setCameraMode("3d")).not.toThrow();
+    expect(unavailableHandler).toHaveBeenCalledTimes(2);
   });
 
   it("destroy() removes the canvas from the container", () => {

@@ -8,6 +8,9 @@ export interface Render2DState {
   camera: RuntimeCamera;
   overlays: readonly Overlay[];
   hoveredId: string | null;
+  /** Space to draw with the same emphasis as hover (e.g. a Builder `space.highlight` action),
+   *  independent of pointer position. Optional so existing callers are unaffected. */
+  highlightedSpaceId?: string | null;
   /** One entry per route node; null marks a gap where a node lives on another floor. */
   routePoints: ReadonlyArray<Point | null>;
   theme?: RuntimeTheme;
@@ -44,19 +47,26 @@ export function render2d(ctx: CanvasRenderingContext2D, state: Render2DState): v
 
   if (state.floor) {
     for (const space of state.floor.spaces) {
-      const hovered = space.id === state.hoveredId;
+      const emphasized = space.id === state.hoveredId || space.id === state.highlightedSpaceId;
       drawPolygon(
         ctx,
         state.camera,
         space.polygon,
         colors.spaceFill,
-        hovered ? colors.accent : colors.spaceStroke,
-        hovered,
+        emphasized ? colors.accent : colors.spaceStroke,
+        emphasized,
       );
     }
 
     for (const wall of state.floor.walls) {
-      drawLine(ctx, state.camera, wall.start, wall.end, colors.wall, Math.max(2, wall.thickness * 20));
+      drawLine(
+        ctx,
+        state.camera,
+        wall.start,
+        wall.end,
+        colors.wall,
+        Math.max(2, wall.thickness * 20),
+      );
     }
 
     for (const entrance of state.floor.entrances) {
@@ -65,7 +75,13 @@ export function render2d(ctx: CanvasRenderingContext2D, state: Render2DState): v
 
     for (const poi of state.floor.pois) {
       const hovered = poi.id === state.hoveredId;
-      drawDot(ctx, state.camera, poi.position, hovered ? colors.accent : colors.poi, hovered ? 8 : 6);
+      drawDot(
+        ctx,
+        state.camera,
+        poi.position,
+        hovered ? colors.accent : colors.poi,
+        hovered ? 8 : 6,
+      );
     }
   }
 

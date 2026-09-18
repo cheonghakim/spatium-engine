@@ -1,6 +1,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { type Entrance, type Floor, type POI, type Point, type Space, type SpaceType, type Wall } from "@indoor/core";
+import {
+  type Entrance,
+  type Floor,
+  type POI,
+  type Point,
+  type Space,
+  type SpaceType,
+  type Wall,
+} from "@indoor/core";
 import { buildArchitecture, stairSpaceGeometry } from "./architecture.js";
 import type { Overlay } from "../overlay.js";
 import type { RuntimeTheme } from "../theme.js";
@@ -10,6 +18,11 @@ export interface Renderer3DCallbacks {
   onPoiClick?(poi: POI): void;
   onPoiHover?(poi: POI | null): void;
   onMarkerClick?(overlay: Overlay): void;
+  /** The WebGL context was lost; rendering is paused until it's restored (or never, if the
+   *  browser can't recover it) — see `webglcontextlost`/`webglcontextrestored`. */
+  onContextLost?(): void;
+  /** The WebGL context came back and the scene was rebuilt from the last known state. */
+  onContextRestored?(): void;
 }
 
 export interface Renderer3DState {
@@ -93,13 +106,25 @@ export class Renderer3D {
 
   private hoveredSpaceMesh: THREE.Object3D | null = null;
   private hoveredPoiMesh: THREE.Object3D | null = null;
+  /** Set via setHighlightedSpace(), independent of pointer hover — e.g. a Builder
+   *  `space.highlight` rule action. When it targets a different mesh than the current hover,
+   *  both are shown highlighted (same emissive color, so there's nothing to arbitrate). */
+  private highlightedSpaceId: string | null = null;
+  private highlightedSpaceMesh: THREE.Object3D | null = null;
   private animationHandle: number | null = null;
   private disposed = false;
   private fittedFloorId: string | undefined;
   private hadGeometry = false;
   private routePlayback: ActiveRoutePlayback | null = null;
+  /** WebGL context lost (see webglcontextlost) — the animate loop is paused until restored. */
+  private contextLost = false;
+  /** The last state passed to update(), replayed to rebuild the scene after context restore. */
+  private lastState: Renderer3DState | null = null;
 
-  constructor(container: HTMLElement, private readonly callbacks: Renderer3DCallbacks = {}) {
+  constructor(
+    container: HTMLElement,
+    private readonly callbacks: Renderer3DCallbacks = {},
+  ) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.style.width = "100%";
@@ -114,7 +139,15 @@ export class Renderer3D {
     this.controls.enableDamping = true;
     this.controls.target.set(0, 0, 0);
 
-    this.scene.add(this.spaceGroup, this.wallGroup, this.entranceGroup, this.poiGroup, this.overlayGroup, this.routeGroup, this.playbackGroup);
+    this.scene.add(
+      this.spaceGroup,
+      this.wallGroup,
+      this.entranceGroup,
+      this.poiGroup,
+      this.overlayGroup,
+      this.routeGroup,
+      this.playbackGroup,
+    );
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     const sun = new THREE.DirectionalLight(0xffffff, 0.6);
     sun.position.set(20, 30, 10);
@@ -123,6 +156,8 @@ export class Renderer3D {
 
     this.renderer.domElement.addEventListener("pointermove", this.handlePointerMove);
     this.renderer.domElement.addEventListener("click", this.handleClick);
+    this.renderer.domElement.addEventListener("webglcontextlost", this.handleContextLost);
+    this.renderer.domElement.addEventListener("webglcontextrestored", this.handleContextRestored);
 
     this.animate();
   }
@@ -131,9 +166,23 @@ export class Renderer3D {
     return this.renderer.domElement;
   }
 
+  /** Exposed for tests only: there's no real WebGL context to render and read pixels from in
+   *  Vitest/jsdom, so resize()'s aspect-ratio guard is otherwise unobservable from outside. */
+  getCameraAspectForTesting(): number {
+    return this.camera.aspect;
+  }
+
+  /** Exposed for tests only: returns the live mesh object for a space id (or null), so a test can
+   *  assert the scene was actually rebuilt (a fresh mesh instance) rather than merely that some
+   *  mesh happens to still be mapped to that id — e.g. after a WebGL context restore rebuilds the
+   *  scene from the last known state. */
+  getSpaceMeshForTesting(spaceId: string): THREE.Object3D | null {
+    return this.findSpaceMesh(spaceId);
+  }
+
   resize(width: number, height: number): void {
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / (height || 1);
+    this.camera.aspect = Math.max(width, 1) / Math.max(height, 1);
     this.camera.updateProjectionMatrix();
   }
 
@@ -153,6 +202,28 @@ export class Renderer3D {
 
   isRoutePlaying(): boolean {
     return this.routePlayback !== null;
+  }
+
+  /** Highlights the space with this id (independent of pointer hover), or clears it if null. */
+  setHighlightedSpace(spaceId: string | null): void {
+    this.highlightedSpaceId = spaceId;
+    this.highlightedSpaceMesh = spaceId ? this.findSpaceMesh(spaceId) : null;
+    this.refreshSpaceEmissive();
+  }
+
+  private findSpaceMesh(spaceId: string): THREE.Object3D | null {
+    for (const [mesh, space] of this.spaceByMesh) {
+      if (space.id === spaceId) return mesh;
+    }
+    return null;
+  }
+
+  /** Re-derives every space mesh's emissive color from current hover + explicit highlight. */
+  private refreshSpaceEmissive(): void {
+    for (const mesh of this.spaceByMesh.keys()) {
+      const active = mesh === this.hoveredSpaceMesh || mesh === this.highlightedSpaceMesh;
+      setSpaceEmissive(mesh, active ? 0x333333 : 0x000000);
+    }
   }
 
   /**
@@ -278,15 +349,19 @@ export class Renderer3D {
   }
 
   update(state: Renderer3DState): void {
+    this.lastState = state;
     this.rebuildSpaces(state.floor?.spaces ?? []);
     this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
     this.rebuildPois(state.floor?.pois ?? []);
     this.rebuildOverlays(state.overlays, state.floor?.id);
     this.rebuildRoute(state.routePoints);
-    const bounds = new THREE.Box3().setFromObject(this.spaceGroup)
-      .union(new THREE.Box3().setFromObject(this.wallGroup)).union(new THREE.Box3().setFromObject(this.entranceGroup));
+    const bounds = new THREE.Box3()
+      .setFromObject(this.spaceGroup)
+      .union(new THREE.Box3().setFromObject(this.wallGroup))
+      .union(new THREE.Box3().setFromObject(this.entranceGroup));
     const hasGeometry = !bounds.isEmpty();
-    if (hasGeometry && (this.fittedFloorId !== state.floor?.id || !this.hadGeometry)) this.fitView();
+    if (hasGeometry && (this.fittedFloorId !== state.floor?.id || !this.hadGeometry))
+      this.fitView();
     this.fittedFloorId = state.floor?.id;
     this.hadGeometry = hasGeometry;
   }
@@ -294,15 +369,18 @@ export class Renderer3D {
   /** Frame the actual model, including off-origin and unusually large floor plans. */
   fitView(): void {
     const bounds = new THREE.Box3();
-    for (const group of [this.spaceGroup, this.wallGroup, this.entranceGroup, this.poiGroup]) bounds.union(new THREE.Box3().setFromObject(group));
+    for (const group of [this.spaceGroup, this.wallGroup, this.entranceGroup, this.poiGroup])
+      bounds.union(new THREE.Box3().setFromObject(group));
     if (bounds.isEmpty()) return;
     const center = bounds.getCenter(new THREE.Vector3());
     const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() / 2, 1);
     const verticalFov = THREE.MathUtils.degToRad(this.camera.fov) / 2;
     const horizontalFov = Math.atan(Math.tan(verticalFov) * this.camera.aspect);
-    const distance = radius / Math.sin(Math.min(verticalFov, horizontalFov)) * 1.15;
+    const distance = (radius / Math.sin(Math.min(verticalFov, horizontalFov))) * 1.15;
     this.controls.target.copy(center);
-    this.camera.position.copy(center).add(new THREE.Vector3(1, 1.2, 1).normalize().multiplyScalar(distance));
+    this.camera.position
+      .copy(center)
+      .add(new THREE.Vector3(1, 1.2, 1).normalize().multiplyScalar(distance));
     this.camera.near = Math.max(0.01, distance / 10000);
     this.camera.far = Math.max(2000, distance + radius * 10);
     this.camera.updateProjectionMatrix();
@@ -314,8 +392,22 @@ export class Renderer3D {
     if (this.animationHandle !== null) cancelAnimationFrame(this.animationHandle);
     this.renderer.domElement.removeEventListener("pointermove", this.handlePointerMove);
     this.renderer.domElement.removeEventListener("click", this.handleClick);
+    this.renderer.domElement.removeEventListener("webglcontextlost", this.handleContextLost);
+    this.renderer.domElement.removeEventListener(
+      "webglcontextrestored",
+      this.handleContextRestored,
+    );
     this.controls.dispose();
-    for (const group of [this.spaceGroup, this.wallGroup, this.entranceGroup, this.poiGroup, this.overlayGroup, this.routeGroup, this.playbackGroup]) disposeGroup(group);
+    for (const group of [
+      this.spaceGroup,
+      this.wallGroup,
+      this.entranceGroup,
+      this.poiGroup,
+      this.overlayGroup,
+      this.routeGroup,
+      this.playbackGroup,
+    ])
+      disposeGroup(group);
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -328,27 +420,49 @@ export class Renderer3D {
     disposeGroup(this.spaceGroup);
     this.spaceByMesh.clear();
     this.hoveredSpaceMesh = null;
+    this.highlightedSpaceMesh = null;
 
     for (const space of spaces) {
       if (space.polygon.length < 3) continue;
 
-      const geometries = space.type === "stairs" ? stairSpaceGeometry(space) : (() => {
-        const shape = new THREE.Shape(space.polygon.map(p => new THREE.Vector2(p.x, p.y)));
-        const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false });
-        geometry.rotateX(-Math.PI / 2);
-        geometry.translate(0, -0.08, 0);
-        return [geometry];
-      })();
+      const geometries =
+        space.type === "stairs"
+          ? stairSpaceGeometry(space)
+          : (() => {
+              const shape = new THREE.Shape(space.polygon.map((p) => new THREE.Vector2(p.x, p.y)));
+              const geometry = new THREE.ExtrudeGeometry(shape, {
+                depth: 0.08,
+                bevelEnabled: false,
+              });
+              geometry.rotateX(-Math.PI / 2);
+              geometry.translate(0, -0.08, 0);
+              return [geometry];
+            })();
       for (const geometry of geometries) {
-        const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-          color: SPACE_COLORS[space.type], emissive: 0x000000, side: THREE.DoubleSide,
-        }));
+        const mesh = new THREE.Mesh(
+          geometry,
+          new THREE.MeshStandardMaterial({
+            color: SPACE_COLORS[space.type],
+            emissive: 0x000000,
+            side: THREE.DoubleSide,
+          }),
+        );
         this.spaceGroup.add(mesh);
         this.spaceByMesh.set(mesh, space);
-        this.spaceGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry),
-          new THREE.LineBasicMaterial({ color: 0x666666 })));
+        this.spaceGroup.add(
+          new THREE.LineSegments(
+            new THREE.EdgesGeometry(geometry),
+            new THREE.LineBasicMaterial({ color: 0x666666 }),
+          ),
+        );
       }
     }
+
+    // Mesh references above are freshly created — re-resolve any explicit highlight against them.
+    this.highlightedSpaceMesh = this.highlightedSpaceId
+      ? this.findSpaceMesh(this.highlightedSpaceId)
+      : null;
+    this.refreshSpaceEmissive();
   }
 
   private rebuildWalls(walls: readonly Wall[], entrances: readonly Entrance[]): void {
@@ -364,29 +478,35 @@ export class Renderer3D {
     this.poiByMesh.clear();
     this.hoveredPoiMesh = null;
 
+    // Template geometry, cloned per mesh below so each mesh owns a genuinely distinct disposable
+    // resource (disposeGroup() disposes every child's geometry independently) rather than all N
+    // meshes sharing one instance by reference.
     const geometry = new THREE.SphereGeometry(0.3, 16, 16);
     for (const poi of pois) {
       const material = new THREE.MeshStandardMaterial({ color: 0xff5c8a });
-      const mesh = new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry.clone(), material);
       mesh.position.copy(this.toGroundVector(poi.position, 1.2));
       this.poiGroup.add(mesh);
       this.poiByMesh.set(mesh, poi);
     }
+    geometry.dispose();
   }
 
   private rebuildOverlays(overlays: readonly Overlay[], activeFloorId: string | undefined): void {
     disposeGroup(this.overlayGroup);
     this.overlayByMesh.clear();
 
+    // See rebuildPois() above: clone per mesh so each owns its own disposable geometry.
     const geometry = new THREE.ConeGeometry(0.3, 0.8, 12);
     for (const overlay of overlays) {
       if (overlay.floorId !== activeFloorId) continue;
       const material = new THREE.MeshStandardMaterial({ color: this.theme.accentColor });
-      const mesh = new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry.clone(), material);
       mesh.position.copy(this.toGroundVector(overlay.position, 1.5));
       this.overlayGroup.add(mesh);
       this.overlayByMesh.set(mesh, overlay);
     }
+    geometry.dispose();
   }
 
   private rebuildRoute(points: ReadonlyArray<Point | null>): void {
@@ -397,7 +517,10 @@ export class Renderer3D {
     const flushSegment = () => {
       if (segment.length >= 2) {
         const geometry = new THREE.BufferGeometry().setFromPoints(segment);
-        const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: this.theme.accentColor }));
+        const line = new THREE.Line(
+          geometry,
+          new THREE.LineBasicMaterial({ color: this.theme.accentColor }),
+        );
         this.routeGroup.add(line);
       }
       segment = [];
@@ -425,7 +548,8 @@ export class Renderer3D {
     const pointer = this.updatePointer(evt);
     this.raycaster.setFromCamera(pointer, this.camera);
 
-    const poiHit = this.raycaster.intersectObjects([...this.poiByMesh.keys()], false)[0]?.object ?? null;
+    const poiHit =
+      this.raycaster.intersectObjects([...this.poiByMesh.keys()], false)[0]?.object ?? null;
     if (poiHit !== this.hoveredPoiMesh) {
       this.hoveredPoiMesh = poiHit;
       const poi = poiHit ? (this.poiByMesh.get(poiHit) ?? null) : null;
@@ -440,10 +564,33 @@ export class Renderer3D {
       ? null
       : (this.raycaster.intersectObjects([...this.spaceByMesh.keys()], false)[0]?.object ?? null);
     if (spaceHit !== this.hoveredSpaceMesh) {
-      setSpaceEmissive(this.hoveredSpaceMesh, 0x000000);
-      setSpaceEmissive(spaceHit, 0x333333);
       this.hoveredSpaceMesh = spaceHit;
+      this.refreshSpaceEmissive();
     }
+  };
+
+  private readonly handleContextLost = (event: Event): void => {
+    // preventDefault() is what allows the browser to actually attempt automatic context
+    // restoration — without it, the context is permanently lost.
+    event.preventDefault();
+    this.contextLost = true;
+    this.callbacks.onContextLost?.();
+  };
+
+  private readonly handleContextRestored = (): void => {
+    this.contextLost = false;
+    // All GPU-side geometry/textures were lost with the context — rebuild the scene from the
+    // last known state rather than waiting for the next unrelated update() call.
+    if (this.lastState) {
+      const state = this.lastState;
+      this.rebuildSpaces(state.floor?.spaces ?? []);
+      this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
+      this.rebuildPois(state.floor?.pois ?? []);
+      this.rebuildOverlays(state.overlays, state.floor?.id);
+      this.rebuildRoute(state.routePoints);
+    }
+    this.callbacks.onContextRestored?.();
+    if (!this.disposed && this.animationHandle === null) this.animate();
   };
 
   private readonly handleClick = (evt: MouseEvent): void => {
@@ -454,7 +601,8 @@ export class Renderer3D {
     );
     this.raycaster.setFromCamera(pointer, this.camera);
 
-    const overlayHit = this.raycaster.intersectObjects([...this.overlayByMesh.keys()], false)[0]?.object;
+    const overlayHit = this.raycaster.intersectObjects([...this.overlayByMesh.keys()], false)[0]
+      ?.object;
     if (overlayHit) {
       const overlay = this.overlayByMesh.get(overlayHit);
       if (overlay) this.callbacks.onMarkerClick?.(overlay);
@@ -468,7 +616,8 @@ export class Renderer3D {
       return;
     }
 
-    const spaceHit = this.raycaster.intersectObjects([...this.spaceByMesh.keys()], false)[0]?.object;
+    const spaceHit = this.raycaster.intersectObjects([...this.spaceByMesh.keys()], false)[0]
+      ?.object;
     if (spaceHit) {
       const space = this.spaceByMesh.get(spaceHit);
       if (space) this.callbacks.onSpaceClick?.(space);
@@ -477,6 +626,11 @@ export class Renderer3D {
 
   private readonly animate = (): void => {
     if (this.disposed) return;
+    if (this.contextLost) {
+      // Don't reschedule while the context is lost — handleContextRestored() resumes the loop.
+      this.animationHandle = null;
+      return;
+    }
     if (this.routePlayback) {
       this.stepRoutePlayback();
     } else {
@@ -497,7 +651,11 @@ function disposeGroup(group: THREE.Group): void {
   for (const child of [...group.children]) {
     group.remove(child);
     if (child instanceof THREE.Group) disposeGroup(child);
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments) {
+    if (
+      child instanceof THREE.Mesh ||
+      child instanceof THREE.Line ||
+      child instanceof THREE.LineSegments
+    ) {
       child.geometry.dispose();
       const material = child.material;
       if (Array.isArray(material)) material.forEach((m) => m.dispose());

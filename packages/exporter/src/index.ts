@@ -10,7 +10,7 @@ export { VanillaJsExporter } from "./VanillaJsExporter.js";
 export { VueExporter } from "./VueExporter.js";
 export { slugify } from "./slugify.js";
 
-import type { ExportInput, ExportResult, ExportTarget } from "./MapExporter.js";
+import type { ExportInput, ExportResult, ExportTarget, MapExporter } from "./MapExporter.js";
 import { JsonExporter } from "./JsonExporter.js";
 import { VanillaJsExporter } from "./VanillaJsExporter.js";
 import { VueExporter } from "./VueExporter.js";
@@ -22,6 +22,17 @@ const EXPORTERS = {
 };
 
 /** Convenience dispatcher — picks the right MapExporter by target name. */
-export async function exportProject(target: ExportTarget, input: ExportInput): Promise<ExportResult> {
-  return EXPORTERS[target].export(input);
+export async function exportProject(
+  target: ExportTarget,
+  input: ExportInput,
+): Promise<ExportResult> {
+  // `target` is typed as ExportTarget here, but callers driven by external
+  // input (an HTTP API, CLI arg, etc.) can't be narrowed by TypeScript, so
+  // this lookup can genuinely miss at runtime — guard it explicitly rather
+  // than letting an unhelpful "Cannot read properties of undefined" surface.
+  const exporter = EXPORTERS[target] as MapExporter | undefined;
+  if (!exporter) {
+    throw new Error(`Unknown export target: "${String(target)}"`);
+  }
+  return exporter.export(input);
 }

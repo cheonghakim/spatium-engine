@@ -12,6 +12,7 @@ export { findFaces, selectRoomFaces } from "./findFaces.js";
 export type { Face } from "./findFaces.js";
 export { vectorizeFloorPlan } from "./vectorizeFloorPlan.js";
 export type { DraftElement } from "./detectElements.js";
+export type { DetectElementsOptions } from "./detectElements.js";
 export type {
   VectorizeOptions,
   DraftWall,
@@ -19,3 +20,11 @@ export type {
   VectorizationWarning,
   VectorizationResult,
 } from "./vectorizeFloorPlan.js";
+export {
+  estimateSkewAngle,
+  rotateBinaryImage,
+  rotatePoint,
+  rotatePointInverse,
+  imageCenter,
+} from "./deskew.js";
+export type { DeskewOptions } from "./deskew.js";

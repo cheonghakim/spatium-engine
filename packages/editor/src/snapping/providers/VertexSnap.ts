@@ -20,6 +20,19 @@ export class VertexSnap implements SnapProvider {
       }
     }
 
+    // Wall is a first-class drawing primitive (see WallTool's doc comment),
+    // independent of Space polygons, so its endpoints are candidates too.
+    for (const wall of context.floor.walls) {
+      if (wall.id === context.excludeId) continue;
+      for (const vertex of [wall.start, wall.end]) {
+        const d = distance(point, vertex);
+        if (d < bestDist) {
+          bestDist = d;
+          best = vertex;
+        }
+      }
+    }
+
     return best ? { point: { ...best }, type: "vertex" } : null;
   }
 }

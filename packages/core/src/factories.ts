@@ -65,7 +65,11 @@ export function createWall(floorId: string, start: Point, end: Point, thickness 
   };
 }
 
-export function createEntrance(floorId: string, position: Point, type: EntranceType = "door"): Entrance {
+export function createEntrance(
+  floorId: string,
+  position: Point,
+  type: EntranceType = "door",
+): Entrance {
   return {
     id: createId(),
     floorId,
@@ -93,12 +97,14 @@ export function createNavigationNode(
   floorId: string,
   position: Point,
   type: NavigationNodeType = "normal",
+  name?: string,
 ): NavigationNode {
   return {
     id: createId(),
     floorId,
     position,
     type,
+    ...(name !== undefined ? { name } : {}),
   };
 }
 

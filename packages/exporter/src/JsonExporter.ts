@@ -1,5 +1,6 @@
 import { serializeProject } from "@indoor/core";
 import type { ExportInput, ExportResult, ExportTarget, MapExporter } from "./MapExporter.js";
+import { buildValidationIssues } from "./sharedFiles.js";
 
 /**
  * Raw data export (spec §34): just the map and its app configuration, no
@@ -15,6 +16,7 @@ export class JsonExporter implements MapExporter {
         { path: "map.json", contents: serializeProject(input.project) },
         { path: "app.config.json", contents: JSON.stringify(input.config, null, 2) },
       ],
+      validationIssues: buildValidationIssues(input),
     };
   }
 }

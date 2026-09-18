@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # @indoor/exporter's tests bundle the real dist/ output of
+      # @indoor/core, @indoor/runtime, and @indoor/builder (that's the whole
+      # point of the standalone-export vendor bundle — see
+      # packages/exporter/src/sharedFiles.ts), so Build must run before Test.
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      # Studio's e2e config (apps/studio/playwright.config.ts) points `use.channel`
+      # at the real Chrome channel (not the bundled Chromium), and its own
+      # `webServer` block starts a dev server on demand — so this only needs the
+      # Chrome browser installed and can run independently of the Build step above.
+      - name: Install Playwright browsers
+        run: pnpm --filter @app/studio exec playwright install --with-deps chrome
+
+      - name: E2E tests
+        run: pnpm --filter @app/studio run test:e2e
+
+      - name: Lint
+        run: pnpm lint

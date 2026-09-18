@@ -1,12 +1,25 @@
-import type { ExportInput, ExportedFile, ExportResult, ExportTarget, MapExporter } from "./MapExporter.js";
-import { buildDataFiles, buildReadme } from "./sharedFiles.js";
+import type {
+  ExportInput,
+  ExportedFile,
+  ExportResult,
+  ExportTarget,
+  MapExporter,
+} from "./MapExporter.js";
+import {
+  buildDataFiles,
+  buildReadme,
+  buildValidationIssues,
+  buildVendorFiles,
+} from "./sharedFiles.js";
 import { escapeHtml } from "./VanillaJsExporter.js";
 import { slugify } from "./slugify.js";
 
 /**
  * Vue 3 export target (spec §30-31). Vue only hosts the container element —
  * the actual map is the same @indoor/builder IndoorBuilder used everywhere
- * else, created in onMounted and destroyed in onUnmounted.
+ * else, created in onMounted and destroyed in onUnmounted. `@indoor/builder`
+ * itself ships as a prebuilt vendor/indoor.bundle.js (see
+ * sharedFiles.ts#buildVendorFiles) rather than a `workspace:*` dependency.
  */
 export class VueExporter implements MapExporter {
   readonly target: ExportTarget = "vue";
@@ -18,13 +31,14 @@ export class VueExporter implements MapExporter {
       { path: "index.html", contents: buildIndexHtml(input.project.name) },
       { path: "package.json", contents: buildPackageJson(name) },
       { path: "vite.config.js", contents: VITE_CONFIG },
+      ...(await buildVendorFiles()),
       { path: "src/map.js", contents: MAP_JS },
       { path: "src/events.js", contents: EVENTS_JS },
       { path: "src/App.vue", contents: APP_VUE },
       { path: "src/main.js", contents: MAIN_JS },
       { path: "README.md", contents: buildReadme(name) },
     ];
-    return { files };
+    return { files, validationIssues: buildValidationIssues(input) };
   }
 }
 
@@ -56,10 +70,10 @@ function buildPackageJson(name: string): string {
         version: "0.0.0",
         type: "module",
         scripts: { dev: "vite", build: "vite build", preview: "vite preview" },
+        // @indoor/core, @indoor/runtime, and @indoor/builder are vendored into
+        // vendor/indoor.bundle.js at export time (see sharedFiles.ts), not
+        // installed from npm — they were never published there anyway.
         dependencies: {
-          "@indoor/core": "workspace:*",
-          "@indoor/runtime": "workspace:*",
-          "@indoor/builder": "workspace:*",
           vue: "^3.5.0",
         },
         devDependencies: { vite: "^5.4.0", "@vitejs/plugin-vue": "^5.1.0" },
@@ -76,7 +90,7 @@ import vue from "@vitejs/plugin-vue";
 export default defineConfig({ plugins: [vue()] });
 `;
 
-const MAP_JS = `import { IndoorBuilder } from "@indoor/builder";
+const MAP_JS = `import { IndoorBuilder } from "../vendor/indoor.bundle.js";
 import project from "../assets/map.json";
 import config from "../config/map.config.json";
 

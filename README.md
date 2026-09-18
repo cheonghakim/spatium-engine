@@ -27,22 +27,31 @@
 
 ### Getting started
 
-Requires [pnpm](https://pnpm.io) and Node.js.
+Requires [pnpm](https://pnpm.io) and Node.js 20+.
 
 ```bash
-pnpm install        # install all workspace dependencies
+pnpm install        # install all workspace dependencies (also sets up the git pre-commit hook)
 pnpm dev:studio      # start the Studio editor (Vite dev server)
 ```
 
 Other useful scripts, run from the repo root:
 
 ```bash
-pnpm build       # build every package under packages/*
-pnpm typecheck   # typecheck the whole workspace
-pnpm test        # run every package's test suite (Vitest)
+pnpm build         # build every package under packages/*
+pnpm typecheck     # typecheck the whole workspace
+pnpm test          # run every package's test suite (Vitest)
+pnpm --filter @app/studio run test:e2e   # Studio's Playwright end-to-end tests
+pnpm lint          # ESLint across the repo
+pnpm format        # format the repo in place with Prettier
 ```
 
 Each package/app also exposes its own `typecheck`/`test`/`dev`/`build` scripts — run them individually with `pnpm --filter <name> run <script>` (e.g. `pnpm --filter @app/studio run dev`).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more on the workspace setup, build ordering, and CI.
+
+### License
+
+[MIT](LICENSE)
 
 ### Project layout
 
@@ -85,22 +94,31 @@ apps/
 
 ### 시작하기
 
-[pnpm](https://pnpm.io)과 Node.js가 필요합니다.
+[pnpm](https://pnpm.io)과 Node.js 20 이상이 필요합니다.
 
 ```bash
-pnpm install        # 워크스페이스 전체 의존성 설치
+pnpm install        # 워크스페이스 전체 의존성 설치 (git pre-commit 훅도 함께 설정됨)
 pnpm dev:studio      # Studio 에디터 실행 (Vite 개발 서버)
 ```
 
 저장소 루트에서 실행할 수 있는 그 외 스크립트:
 
 ```bash
-pnpm build       # packages/* 하위 모든 패키지 빌드
-pnpm typecheck   # 워크스페이스 전체 타입 검사
-pnpm test        # 모든 패키지의 테스트 스위트 실행 (Vitest)
+pnpm build         # packages/* 하위 모든 패키지 빌드
+pnpm typecheck     # 워크스페이스 전체 타입 검사
+pnpm test          # 모든 패키지의 테스트 스위트 실행 (Vitest)
+pnpm --filter @app/studio run test:e2e   # Studio의 Playwright 엔드투엔드 테스트
+pnpm lint          # 저장소 전체 ESLint 검사
+pnpm format        # Prettier로 저장소 전체 포맷팅
 ```
 
 각 패키지/앱도 자체 `typecheck`/`test`/`dev`/`build` 스크립트를 가지고 있으므로, `pnpm --filter <이름> run <스크립트>` 형태로 개별 실행할 수 있습니다 (예: `pnpm --filter @app/studio run dev`).
+
+워크스페이스 설정, 빌드 순서, CI에 대한 더 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요.
+
+### 라이센스
+
+[MIT](LICENSE)
 
 ### 프로젝트 구조
 

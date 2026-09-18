@@ -21,4 +21,12 @@ export interface ToolContext {
   readonly snapping: SnapManager;
   executeCommand(command: Command): void;
   requestRender(): void;
+  /**
+   * Every floor in the building that contains the navigation node with the
+   * given id, or undefined if no such node exists anywhere in the project.
+   * A cross-floor navigation link (see IndoorEditor.linkFloorNode) can store
+   * its edge on either endpoint's floor, so cascading a node delete has to
+   * search every floor of the owning building, not just the active one.
+   */
+  findNodeBuilding(nodeId: string): readonly Floor[] | undefined;
 }

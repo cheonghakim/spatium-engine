@@ -18,7 +18,12 @@ export class NavigationNodeTool implements EditorTool {
     if (!floor) return;
 
     const point = this.context.snapping.resolve(event.worldPoint, { floor });
-    const node = createNavigationNode(floor.id, point, "normal");
+    const node = createNavigationNode(
+      floor.id,
+      point,
+      "normal",
+      `노드 ${floor.navigation.nodes.length + 1}`,
+    );
 
     this.context.executeCommand(new AddNavigationNodeCommand(floor, node));
     this.context.selection.select(node.id);

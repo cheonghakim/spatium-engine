@@ -1,11 +1,25 @@
-import type { ExportInput, ExportedFile, ExportResult, ExportTarget, MapExporter } from "./MapExporter.js";
-import { buildDataFiles, buildReadme } from "./sharedFiles.js";
+import type {
+  ExportInput,
+  ExportedFile,
+  ExportResult,
+  ExportTarget,
+  MapExporter,
+} from "./MapExporter.js";
+import {
+  buildDataFiles,
+  buildReadme,
+  buildValidationIssues,
+  buildVendorFiles,
+} from "./sharedFiles.js";
 import { slugify } from "./slugify.js";
 
 /**
  * Plain HTML + JS + Vite export target (spec §30-31) — no framework. The
  * generated src/map.js constructs a real @indoor/builder IndoorBuilder, the
  * same class Studio's preview runs, from the exported map.json/map.config.json.
+ * `@indoor/builder` itself ships as a prebuilt vendor/indoor.bundle.js (see
+ * sharedFiles.ts#buildVendorFiles) rather than a `workspace:*` dependency, so
+ * the exported app is actually installable/runnable outside this monorepo.
  */
 export class VanillaJsExporter implements MapExporter {
   readonly target: ExportTarget = "vanilla-js";
@@ -17,12 +31,13 @@ export class VanillaJsExporter implements MapExporter {
       { path: "index.html", contents: buildIndexHtml(input.project.name) },
       { path: "package.json", contents: buildPackageJson(name) },
       { path: "vite.config.js", contents: "export default {};\n" },
+      ...(await buildVendorFiles()),
       { path: "src/map.js", contents: MAP_JS },
       { path: "src/events.js", contents: EVENTS_JS },
       { path: "src/main.js", contents: MAIN_JS },
       { path: "README.md", contents: buildReadme(name) },
     ];
-    return { files };
+    return { files, validationIssues: buildValidationIssues(input) };
   }
 }
 
@@ -54,11 +69,10 @@ function buildPackageJson(name: string): string {
         version: "0.0.0",
         type: "module",
         scripts: { dev: "vite", build: "vite build", preview: "vite preview" },
-        dependencies: {
-          "@indoor/core": "workspace:*",
-          "@indoor/runtime": "workspace:*",
-          "@indoor/builder": "workspace:*",
-        },
+        // @indoor/core, @indoor/runtime, and @indoor/builder are vendored into
+        // vendor/indoor.bundle.js at export time (see sharedFiles.ts), not
+        // installed from npm — they were never published there anyway.
+        dependencies: {},
         devDependencies: { vite: "^5.4.0" },
       },
       null,
@@ -67,7 +81,7 @@ function buildPackageJson(name: string): string {
   );
 }
 
-const MAP_JS = `import { IndoorBuilder } from "@indoor/builder";
+const MAP_JS = `import { IndoorBuilder } from "../vendor/indoor.bundle.js";
 import project from "../assets/map.json";
 import config from "../config/map.config.json";
 

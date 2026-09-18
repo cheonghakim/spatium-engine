@@ -13,4 +13,11 @@ export interface RuntimeEventMap {
   "camera.changed": { mode: CameraMode; state: RuntimeCameraState };
   "route.started": { fromNodeId: string; toNodeId: string };
   "route.finished": Record<string, never>;
+  /** 3D was requested (setCameraMode("3d") / playRouteAnimation()) but WebGL isn't available
+   *  (headless/sandboxed embeds, old browsers, some CI) — the camera mode stays unchanged. */
+  "render3d.unavailable": { message: string };
+  /** The 3D renderer's WebGL context was lost; rendering is paused until it recovers. */
+  "render3d.contextLost": Record<string, never>;
+  /** The 3D renderer's WebGL context was restored and its scene rebuilt automatically. */
+  "render3d.contextRestored": Record<string, never>;
 }

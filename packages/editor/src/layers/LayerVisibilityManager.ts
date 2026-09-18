@@ -29,6 +29,12 @@ export class LayerVisibilityManager {
     this.setVisible(layer, !this.visibility[layer]);
   }
 
+  /** Restores every layer's visibility to its default (all visible) — used when swapping to a new project. */
+  reset(): void {
+    this.visibility = { ...DEFAULT_VISIBILITY };
+    this.onChange();
+  }
+
   get all(): Readonly<Record<LayerId, boolean>> {
     return this.visibility;
   }

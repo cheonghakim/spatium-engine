@@ -4,6 +4,8 @@ import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./Edit
 import type { ToolContext } from "./ToolContext.js";
 
 const CLOSE_LOOP_RADIUS_PX = 10;
+/** Below this length a new vertex is considered a stray/duplicate click rather than an intentional zero-length edge. */
+const MIN_SEGMENT_LENGTH_METERS = 0.01;
 
 /**
  * click -> add vertex, click on first vertex or Enter -> finish (creates a
@@ -47,6 +49,10 @@ export class PolygonTool implements EditorTool {
       event.worldPoint,
       previous ? { floor, referencePoint: previous } : { floor },
     );
+
+    // Ignore a click that lands right back on the previous vertex instead of
+    // adding a zero-length edge.
+    if (previous && distance(snapped, previous) < MIN_SEGMENT_LENGTH_METERS) return;
 
     this.draftPoints.push(snapped);
     this.context.requestRender();

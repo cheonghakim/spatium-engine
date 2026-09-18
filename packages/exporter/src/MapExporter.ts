@@ -1,4 +1,4 @@
-import type { IndoorProject } from "@indoor/core";
+import type { IndoorProject, ValidationIssue } from "@indoor/core";
 import type { BuilderConfig } from "@indoor/builder";
 
 export type ExportTarget = "vanilla-js" | "vue" | "json";
@@ -15,6 +15,14 @@ export interface ExportedFile {
 
 export interface ExportResult {
   files: ExportedFile[];
+  /**
+   * `validateProject(input.project)` output, surfaced so callers can warn on
+   * data-quality problems (e.g. disconnected floors, dangling nav edges)
+   * without the exporter itself throwing — a project with issues (even
+   * `error`-severity ones) is still exported; it's up to the caller to
+   * decide whether to block on them.
+   */
+  validationIssues?: ValidationIssue[];
 }
 
 /**

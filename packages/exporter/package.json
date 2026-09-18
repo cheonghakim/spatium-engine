@@ -2,21 +2,33 @@
   "name": "@indoor/exporter",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "tsup"
   },
   "dependencies": {
-    "@indoor/core": "workspace:*",
-    "@indoor/builder": "workspace:*"
+    "@indoor/builder": "workspace:*",
+    "@indoor/core": "workspace:*"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^20.19.43",
+    "esbuild": "0.21.5",
+    "jsdom": "^25.0.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

@@ -1,28 +1,42 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { IndoorRuntime, type RouteAnimationType, type RouteCameraMode, type RouteCurveShape } from "@indoor/runtime";
+import {
+  IndoorRuntime,
+  type RouteAnimationType,
+  type RouteCameraMode,
+  type RouteCurveShape,
+} from "@indoor/runtime";
 import type { IndoorEditor } from "@indoor/editor";
 
 const props = defineProps<{ editor: IndoorEditor }>();
 const containerRef = ref<HTMLDivElement | null>(null);
 const revision = ref(0);
 const loading = ref(true);
-const error = ref('');
+const error = ref("");
 const isPlaying = ref(false);
-const curve = ref<RouteCurveShape>('smooth');
-const animationType = ref<RouteAnimationType>('marker');
-const cameraMode = ref<RouteCameraMode>('third');
+const curve = ref<RouteCurveShape>("smooth");
+const animationType = ref<RouteAnimationType>("marker");
+const cameraMode = ref<RouteCameraMode>("third");
 let runtime: IndoorRuntime | null = null;
 let disposed = false;
 let generation = 0;
 let unsubscribers: Array<() => void> = [];
 let playbackWatchHandle: ReturnType<typeof setInterval> | null = null;
 
-const previewProject = computed(() => { revision.value; return props.editor.getPreviewProject(); });
-const previewFloor = computed(() => previewProject.value.buildings.flatMap(b => b.floors).find(f => f.id === props.editor.getActiveFloor()?.id));
+const previewProject = computed(() => {
+  revision.value;
+  return props.editor.getPreviewProject();
+});
+const previewFloor = computed(() =>
+  previewProject.value.buildings
+    .flatMap((b) => b.floors)
+    .find((f) => f.id === props.editor.getActiveFloor()?.id),
+);
 const spaceCount = computed(() => previewFloor.value?.spaces.length ?? 0);
 const wallCount = computed(() => previewFloor.value?.walls.length ?? 0);
-const isEmpty = computed(() => spaceCount.value === 0 && wallCount.value === 0 && !previewFloor.value?.entrances.length);
+const isEmpty = computed(
+  () => spaceCount.value === 0 && wallCount.value === 0 && !previewFloor.value?.entrances.length,
+);
 const hasDraft = computed(() => {
   revision.value;
   const draft = props.editor.draft.current;
@@ -42,7 +56,11 @@ function syncRouteIntoRuntime(): void {
 
 function playAnimation(): void {
   if (!runtime || !canPlayRoute.value) return;
-  runtime.playRouteAnimation({ curve: curve.value, animationType: animationType.value, cameraMode: cameraMode.value });
+  runtime.playRouteAnimation({
+    curve: curve.value,
+    animationType: animationType.value,
+    cameraMode: cameraMode.value,
+  });
   isPlaying.value = true;
   if (playbackWatchHandle === null) {
     playbackWatchHandle = setInterval(() => {
@@ -76,12 +94,14 @@ async function refresh(): Promise<void> {
     if (disposed || ticket !== generation) return;
     const floorId = props.editor.getActiveFloor()?.id;
     if (floorId) current.setFloor(floorId);
-    current.setCameraMode('3d');
+    current.setCameraMode("3d");
     current.start();
     syncRouteIntoRuntime();
-    error.value = '';
+    error.value = "";
   } catch {
-    if (!disposed && ticket === generation) error.value = '3D 화면을 시작하지 못했습니다. 브라우저의 그래픽 가속(WebGL) 사용 여부를 확인하고 다시 시도해 주세요.';
+    if (!disposed && ticket === generation)
+      error.value =
+        "3D 화면을 시작하지 못했습니다. 브라우저의 그래픽 가속(WebGL) 사용 여부를 확인하고 다시 시도해 주세요.";
   } finally {
     if (!disposed && ticket === generation) loading.value = false;
   }
@@ -90,7 +110,10 @@ async function refresh(): Promise<void> {
 onMounted(() => {
   if (!containerRef.value) return;
   runtime = new IndoorRuntime({ container: containerRef.value });
-  unsubscribers = [props.editor.on('projectChanged', refresh), props.editor.on('floorChanged', refresh)];
+  unsubscribers = [
+    props.editor.on("projectChanged", refresh),
+    props.editor.on("floorChanged", refresh),
+  ];
   void refresh();
 });
 onBeforeUnmount(() => {
@@ -105,17 +128,26 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="preview-3d-wrapper">
-    <div ref="containerRef" class="preview-3d"></div>
+    <div ref="containerRef" class="preview-3d" />
     <div v-if="loading" class="empty-overlay" role="status">3D 화면을 준비하고 있습니다.</div>
-    <div v-else-if="error" class="empty-overlay error" role="alert"><p>{{ error }}</p><button @click="refresh">다시 시도</button></div>
+    <div v-else-if="error" class="empty-overlay error" role="alert">
+      <p>{{ error }}</p>
+      <button @click="refresh">다시 시도</button>
+    </div>
     <div v-else-if="isEmpty" class="empty-overlay">
       <p>이 층에 3D로 표시할 벽이나 공간이 없습니다.</p>
       <p class="hint">
-        {{ hasDraft ? '검토 탭에서 포함할 벽이나 방을 선택하세요. 제외한 항목은 미리보기에 표시되지 않습니다.' : '자동 벡터화를 실행하거나 공간·벽 도구로 지도를 그려 주세요. 도면 이미지만으로는 3D 모델이 표시되지 않습니다.' }}
+        {{
+          hasDraft
+            ? "검토 탭에서 포함할 벽이나 방을 선택하세요. 제외한 항목은 미리보기에 표시되지 않습니다."
+            : "자동 벡터화를 실행하거나 공간·벽 도구로 지도를 그려 주세요. 도면 이미지만으로는 3D 모델이 표시되지 않습니다."
+        }}
       </p>
     </div>
     <div v-else class="hint-banner" role="status">
-      <strong>{{ hasDraft ? '검토용 초안 포함 · 아직 확정되지 않았습니다' : '확정된 지도' }}</strong>
+      <strong>{{
+        hasDraft ? "검토용 초안 포함 · 아직 확정되지 않았습니다" : "확정된 지도"
+      }}</strong>
       <span>벽 {{ wallCount }}개 · 공간 {{ spaceCount }}개</span>
       <span v-if="spaceCount === 0">벽만 표시 중입니다. 공간을 추가하면 바닥도 표시됩니다.</span>
     </div>
@@ -123,20 +155,23 @@ onBeforeUnmount(() => {
       <span>드래그: 회전 · 휠: 확대·축소</span>
       <button @click="runtime?.fitView3D()">전체 보기</button>
       <span class="divider" />
-      <label>경로 모양
-        <select v-model="curve" :disabled="isPlaying">
+      <label :class="{ inert: !canPlayRoute && !isPlaying }"
+        >경로 모양
+        <select v-model="curve" :disabled="isPlaying || !canPlayRoute">
           <option value="smooth">곡선</option>
           <option value="straight">직선</option>
         </select>
       </label>
-      <label>애니메이션
-        <select v-model="animationType" :disabled="isPlaying">
+      <label :class="{ inert: !canPlayRoute && !isPlaying }"
+        >애니메이션
+        <select v-model="animationType" :disabled="isPlaying || !canPlayRoute">
           <option value="marker">마커 이동</option>
           <option value="flythrough">카메라 주행</option>
         </select>
       </label>
-      <label>시점
-        <select v-model="cameraMode" :disabled="isPlaying">
+      <label :class="{ inert: !canPlayRoute && !isPlaying }"
+        >시점
+        <select v-model="cameraMode" :disabled="isPlaying || !canPlayRoute">
           <option value="third">3인칭</option>
           <option value="first">1인칭</option>
         </select>
@@ -145,7 +180,12 @@ onBeforeUnmount(() => {
         :disabled="!canPlayRoute && !isPlaying"
         :title="canPlayRoute ? '' : '경로 탭에서 경로를 먼저 계산하세요'"
         @click="isPlaying ? stopAnimation() : playAnimation()"
-      >{{ isPlaying ? '■ 정지' : '▶ 경로 재생' }}</button>
+      >
+        {{ isPlaying ? "■ 정지" : "▶ 경로 재생" }}
+      </button>
+      <span v-if="!canPlayRoute && !isPlaying" class="route-needed-hint"
+        >경로 탭에서 경로를 먼저 계산하세요</span
+      >
     </div>
   </div>
 </template>
@@ -231,9 +271,16 @@ onBeforeUnmount(() => {
   color: var(--text-tertiary);
   white-space: nowrap;
 }
+.view-controls label.inert {
+  opacity: 0.45;
+}
 .view-controls select {
   font-size: 12px;
   padding: 4px 6px;
+}
+.route-needed-hint {
+  color: var(--warning);
+  white-space: nowrap;
 }
 button {
   background: var(--accent-soft);

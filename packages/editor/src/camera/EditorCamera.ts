@@ -1,9 +1,4 @@
-import {
-  projectToScreen,
-  projectToWorld,
-  screenDeltaToWorldDelta,
-  type Point,
-} from "@indoor/core";
+import { projectToScreen, projectToWorld, screenDeltaToWorldDelta, type Point } from "@indoor/core";
 
 export interface CameraState {
   center: Point;
@@ -40,7 +35,22 @@ export class EditorCamera {
 
   setState(state: CameraState): void {
     this.center = { ...state.center };
-    this.zoom = state.zoom;
+    // Clamp here too, not just in zoomBy, so a caller can never push the
+    // camera into a zoom level the UI's own zoom controls would refuse.
+    this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, state.zoom));
+  }
+
+  /**
+   * Resets pan/zoom back to the camera's initial state (origin-centered, at
+   * the default zoom level). Used whenever the view should no longer reflect
+   * wherever the previous project happened to leave it — e.g. loading a new
+   * project — since a stale pan/zoom could otherwise leave a fresh project's
+   * geometry rendered off-screen. Viewport size is untouched: it describes
+   * the canvas element, not where the camera happens to be looking.
+   */
+  reset(): void {
+    this.center = { x: 0, y: 0 };
+    this.zoom = DEFAULT_ZOOM;
   }
 
   /** Pan by a delta expressed in screen pixels. */

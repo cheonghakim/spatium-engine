@@ -17,6 +17,16 @@ export interface BuilderEventMap {
    *  this way, since the host app owns that UI, not the Builder. */
   action: { action: Action; sourceEvent: string };
   configChanged: { config: BuilderConfig };
+  /**
+   * Fired when a rule can't be fully honored at runtime: an unrecognized
+   * `action.type` or condition `operator` (stale/hand-edited config that
+   * TypeScript's compile-time exhaustiveness can't catch), or a `poi.focus` /
+   * `space.highlight` action whose target id doesn't exist in the project
+   * (stale/renamed id). The rule still safely no-ops in all of these cases —
+   * this is purely an observability signal for a builder UI or host app to
+   * surface to whoever authored the config.
+   */
+  warning: { message: string; context?: unknown };
 }
 
 const DEFAULT_CONFIG: BuilderConfig = {
@@ -25,7 +35,7 @@ const DEFAULT_CONFIG: BuilderConfig = {
   events: [],
 };
 
-const RUNTIME_EVENT_NAMES: ReadonlyArray<keyof RuntimeEventMap> = [
+export const RUNTIME_EVENT_NAMES: ReadonlyArray<keyof RuntimeEventMap> = [
   "map.loaded",
   "poi.click",
   "poi.hover",
@@ -81,15 +91,25 @@ export class IndoorBuilder {
     const state = this.runtime.camera.getState();
     this.setConfig({
       ...this.config,
-      camera: { ...this.config.camera, initialCenter: { ...state.center }, initialZoom: state.zoom },
+      camera: {
+        ...this.config.camera,
+        initialCenter: { ...state.center },
+        initialZoom: state.zoom,
+      },
     });
   }
 
-  on<K extends keyof BuilderEventMap>(event: K, handler: (payload: BuilderEventMap[K]) => void): () => void {
+  on<K extends keyof BuilderEventMap>(
+    event: K,
+    handler: (payload: BuilderEventMap[K]) => void,
+  ): () => void {
     return this.emitter.on(event, handler);
   }
 
-  off<K extends keyof BuilderEventMap>(event: K, handler: (payload: BuilderEventMap[K]) => void): void {
+  off<K extends keyof BuilderEventMap>(
+    event: K,
+    handler: (payload: BuilderEventMap[K]) => void,
+  ): void {
     this.emitter.off(event, handler);
   }
 
@@ -101,7 +121,11 @@ export class IndoorBuilder {
       zoom: camera.initialZoom ?? current.zoom,
       rotation: current.rotation,
     });
-    this.runtime.setInteractionOptions({ pan: camera.pan, zoom: camera.zoom, rotate: camera.rotate });
+    this.runtime.setInteractionOptions({
+      pan: camera.pan,
+      zoom: camera.zoom,
+      rotate: camera.rotate,
+    });
     this.runtime.setCameraMode(camera.mode);
     this.runtime.setTheme(this.config.theme ?? {});
   }
@@ -109,9 +133,16 @@ export class IndoorBuilder {
   private handleRuntimeEvent(eventName: keyof RuntimeEventMap, payload: unknown): void {
     for (const rule of this.config.events) {
       if (rule.event !== eventName) continue;
-      if (!matchesConditions(rule.conditions, payload)) continue;
+      const matches = matchesConditions(rule.conditions, payload, (operator, condition) =>
+        this.emitWarning(`Unrecognized condition operator "${operator}".`, { rule, condition }),
+      );
+      if (!matches) continue;
       for (const action of rule.actions) this.executeAction(action, payload);
     }
+  }
+
+  private emitWarning(message: string, context?: unknown): void {
+    this.emitter.emit("warning", context === undefined ? { message } : { message, context });
   }
 
   private executeAction(action: Action, sourcePayload: unknown): void {
@@ -123,17 +154,28 @@ export class IndoorBuilder {
         const found = poiId ? findPOIInProject(this.project, poiId) : null;
         if (found) {
           const state = this.runtime.camera.getState();
-          this.runtime.setCameraState({ center: found.poi.position, zoom: state.zoom, rotation: state.rotation });
+          this.runtime.setCameraState({
+            center: found.poi.position,
+            zoom: state.zoom,
+            rotation: state.rotation,
+          });
+        } else if (poiId) {
+          this.emitWarning(`poi.focus: no POI found for id "${poiId}".`, { action });
         }
         break;
       }
       case "space.highlight": {
-        // Visual highlighting of an arbitrary space on demand isn't wired into
-        // the renderers yet (only hover-driven highlight is) — resolving the
-        // target here and emitting "action" above is what a host UI needs to
-        // implement its own highlight today.
         const spaceId = action.spaceId ?? extractId(sourcePayload, "space");
-        if (spaceId) findSpaceInProject(this.project, spaceId);
+        if (!spaceId) {
+          // No target resolvable (omitted spaceId, no matching id on the triggering event):
+          // clear whatever highlight is currently showing.
+          this.runtime.highlightSpace(null);
+        } else if (findSpaceInProject(this.project, spaceId)) {
+          this.runtime.highlightSpace(spaceId);
+        } else {
+          this.emitWarning(`space.highlight: no space found for id "${spaceId}".`, { action });
+          this.runtime.highlightSpace(null);
+        }
         break;
       }
       case "marker.add":
@@ -189,6 +231,13 @@ export class IndoorBuilder {
       case "url.open":
       case "event.emit":
         // Host-application UI concerns — already surfaced via the "action" event above.
+        break;
+      default:
+        // Stale/malformed persisted config can carry an action.type TS's exhaustiveness
+        // check can't see at runtime — surface it instead of silently dropping the action.
+        this.emitWarning(`Unrecognized action type "${String((action as Action).type)}".`, {
+          action,
+        });
         break;
     }
   }

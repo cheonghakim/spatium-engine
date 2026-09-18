@@ -3,6 +3,7 @@ export type { ToolContext } from "./ToolContext.js";
 export { ToolManager } from "./ToolManager.js";
 export { PanTool } from "./PanTool.js";
 export { SelectTool } from "./SelectTool.js";
+export { DraftReviewTool } from "./DraftReviewTool.js";
 export { PolygonTool } from "./PolygonTool.js";
 export { WallTool } from "./WallTool.js";
 export { CalibrateTool } from "./CalibrateTool.js";

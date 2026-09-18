@@ -53,6 +53,7 @@ export class IndoorRuntime {
   private overlays: Overlay[] = [];
   private route: PathResult | null = null;
   private hoveredId: string | null = null;
+  private highlightedSpaceId: string | null = null;
 
   private dragging = false;
   private lastPointerScreen: Point | null = null;
@@ -99,7 +100,9 @@ export class IndoorRuntime {
     this.render();
   }
 
-  fitView3D(): void { this.renderer3d?.fitView(); }
+  fitView3D(): void {
+    this.renderer3d?.fitView();
+  }
 
   destroy(): void {
     this.resizeObserver?.disconnect();
@@ -135,16 +138,31 @@ export class IndoorRuntime {
 
     if (mode === "3d") {
       if (!this.renderer3d) {
-        this.renderer3d = new Renderer3D(this.container, {
-          onSpaceClick: (space) => this.emitter.emit("space.click", { space }),
-          onPoiClick: (poi) => this.emitter.emit("poi.click", { poi }),
-          onPoiHover: (poi) => this.emitter.emit("poi.hover", { poi }),
-          onMarkerClick: (overlay) => this.emitter.emit("marker.click", { markerId: overlay.id }),
-        });
+        try {
+          this.renderer3d = new Renderer3D(this.container, {
+            onSpaceClick: (space) => this.emitter.emit("space.click", { space }),
+            onPoiClick: (poi) => this.emitter.emit("poi.click", { poi }),
+            onPoiHover: (poi) => this.emitter.emit("poi.hover", { poi }),
+            onMarkerClick: (overlay) => this.emitter.emit("marker.click", { markerId: overlay.id }),
+            onContextLost: () => this.emitter.emit("render3d.contextLost", {}),
+            onContextRestored: () => this.emitter.emit("render3d.contextRestored", {}),
+          });
+        } catch (error) {
+          // WebGL unavailable (headless/sandboxed embeds, old browsers, some CI): stay in
+          // whatever camera mode was active instead of throwing out of setCameraMode(), so a
+          // caller like playRouteAnimation() (which also calls setCameraMode("3d")) degrades to
+          // a no-op rather than crashing the host page.
+          this.renderer3d = null;
+          this.emitter.emit("render3d.unavailable", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
         const rect = this.container.getBoundingClientRect();
         this.renderer3d.resize(rect.width, rect.height);
         this.renderer3d.setControlsEnabled(this.interaction);
         this.renderer3d.setTheme(this.theme);
+        this.renderer3d.setHighlightedSpace(this.highlightedSpaceId);
       }
       this.canvas.style.display = "none";
       this.renderer3d.getDomElement().style.display = "block";
@@ -194,7 +212,11 @@ export class IndoorRuntime {
   }
 
   /** Computes the shortest route across the whole project's navigation graph and displays it. */
-  startRoute(fromNodeId: string, toNodeId: string, options: PathfindingOptions = {}): PathResult | null {
+  startRoute(
+    fromNodeId: string,
+    toNodeId: string,
+    options: PathfindingOptions = {},
+  ): PathResult | null {
     if (!this.project) return null;
     const graph = mergeProjectNavigationGraph(this.project);
     this.route = findShortestPath(graph, fromNodeId, toNodeId, options);
@@ -221,6 +243,17 @@ export class IndoorRuntime {
 
   isPlayingRouteAnimation(): boolean {
     return this.renderer3d?.isRoutePlaying() ?? false;
+  }
+
+  /**
+   * Highlights a space by id (e.g. a Builder `space.highlight` rule action) on whichever
+   * renderer(s) are active, so the highlight survives a `setCameraMode()` switch. Pass null
+   * to clear it.
+   */
+  highlightSpace(spaceId: string | null): void {
+    this.highlightedSpaceId = spaceId;
+    this.renderer3d?.setHighlightedSpace(spaceId);
+    this.render();
   }
 
   clearRoute(): void {
@@ -289,7 +322,10 @@ export class IndoorRuntime {
   private readonly handlePointerMove = (evt: PointerEvent): void => {
     if (this.dragging && this.lastPointerScreen) {
       const current = this.toScreenPoint(evt);
-      const delta = { x: current.x - this.lastPointerScreen.x, y: current.y - this.lastPointerScreen.y };
+      const delta = {
+        x: current.x - this.lastPointerScreen.x,
+        y: current.y - this.lastPointerScreen.y,
+      };
       this.camera.panByScreenDelta(delta);
       this.lastPointerScreen = current;
       this.emitter.emit("camera.changed", { mode: this.cameraMode, state: this.camera.getState() });
@@ -303,7 +339,8 @@ export class IndoorRuntime {
     const point = this.camera.screenToWorld(this.toScreenPoint(evt));
     const hitRadiusWorld = HIT_RADIUS_PX / this.camera.getState().zoom;
     const hit = hitTest(point, floor, this.overlays, hitRadiusWorld);
-    const newHoveredId = hit?.kind === "poi" ? hit.poi.id : hit?.kind === "marker" ? hit.overlay.id : null;
+    const newHoveredId =
+      hit?.kind === "poi" ? hit.poi.id : hit?.kind === "marker" ? hit.overlay.id : null;
 
     if (newHoveredId !== this.hoveredId) {
       this.hoveredId = newHoveredId;
@@ -346,6 +383,7 @@ export class IndoorRuntime {
       camera: this.camera,
       overlays: this.overlays,
       hoveredId: this.hoveredId,
+      highlightedSpaceId: this.highlightedSpaceId,
       routePoints: this.computeRoutePoints(),
       theme: this.theme,
     });

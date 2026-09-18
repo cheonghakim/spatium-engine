@@ -1,5 +1,6 @@
 import { distance } from "../geometry/distance.js";
 import type { NavigationEdge, NavigationGraph } from "../types/navigation.js";
+import { MinHeap } from "./minHeap.js";
 
 export interface PathfindingOptions {
   /** Reject edges of type "stairs" entirely. */
@@ -68,21 +69,26 @@ export function findShortestPath(
   const gScore = new Map<string, number>([[startNodeId, 0]]);
   const cameFrom = new Map<string, { nodeId: string; edge: NavigationEdge }>();
   const visited = new Set<string>();
-  const open = new Set<string>([startNodeId]);
+
+  // Binary min-heap keyed by f-score, instead of a linear scan over an open
+  // Set, so picking the next node to expand is O(log V) rather than O(V).
+  // Array heaps don't support an efficient decrease-key, so instead of
+  // updating an existing open-set entry when a cheaper path to a node is
+  // found, the node is simply pushed again with its new (lower) f-score —
+  // the old, stale entry is left in the heap. That's safe: the `visited`
+  // check below skips a node the first time it's (re-)popped after already
+  // being expanded, and since gScore only ever improves, the *first* pop of
+  // any given node is guaranteed to carry its best f-score, so any later,
+  // staler pop for the same node is just skipped as a no-op.
+  const open = new MinHeap<string>();
+  open.push(startNodeId, heuristic(startNodeId));
 
   while (open.size > 0) {
-    let currentId: string | null = null;
-    let bestF = Infinity;
-    for (const id of open) {
-      const f = (gScore.get(id) ?? Infinity) + heuristic(id);
-      if (f < bestF) {
-        bestF = f;
-        currentId = id;
-      }
-    }
-    if (currentId === null || currentId === goalNodeId) break;
+    const currentId = open.pop();
+    if (currentId === undefined) break;
+    if (visited.has(currentId)) continue;
+    if (currentId === goalNodeId) break;
 
-    open.delete(currentId);
     visited.add(currentId);
     const currentG = gScore.get(currentId) ?? Infinity;
 
@@ -92,7 +98,7 @@ export function findShortestPath(
       if (tentativeG < (gScore.get(neighborId) ?? Infinity)) {
         gScore.set(neighborId, tentativeG);
         cameFrom.set(neighborId, { nodeId: currentId, edge });
-        open.add(neighborId);
+        open.push(neighborId, tentativeG + heuristic(neighborId));
       }
     }
   }

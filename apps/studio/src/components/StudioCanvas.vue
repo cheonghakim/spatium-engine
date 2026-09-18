@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import type { Point } from "@indoor/core";
-import { IndoorEditor, PolygonTool, WallTool, CalibrateTool, NavigationEdgeTool, NavigationTool } from "@indoor/editor";
+import {
+  IndoorEditor,
+  PolygonTool,
+  WallTool,
+  CalibrateTool,
+  NavigationEdgeTool,
+  NavigationTool,
+} from "@indoor/editor";
 import { render } from "../canvas/render";
 import { setImageLoadListener } from "../canvas/imageCache";
 
@@ -28,7 +35,8 @@ function currentCalibrationPoints() {
 
 function currentPendingEdgeNodeId(): string | null {
   const tool = props.editor.tools.active;
-  if (tool instanceof NavigationEdgeTool || tool instanceof NavigationTool) return tool.getPendingNodeId();
+  if (tool instanceof NavigationEdgeTool || tool instanceof NavigationTool)
+    return tool.getPendingNodeId();
   return null;
 }
 
@@ -50,7 +58,8 @@ function currentRoutePoints(): Array<Point | null> {
 function draw(): void {
   if (!ctx) return;
   const draft = props.editor.draft.current;
-  const visibleDraft = !draft?.floorId || draft.floorId === props.editor.getActiveFloor()?.id ? draft : null;
+  const visibleDraft =
+    !draft?.floorId || draft.floorId === props.editor.getActiveFloor()?.id ? draft : null;
   render(ctx, {
     floor: props.editor.getActiveFloor(),
     camera: props.editor.camera,
@@ -118,7 +127,10 @@ function onPointerDown(evt: PointerEvent): void {
 function onPointerMove(evt: PointerEvent): void {
   if (isPanning.value && panLastScreen) {
     const current = { x: evt.clientX, y: evt.clientY };
-    props.editor.camera.panByScreenDelta({ x: current.x - panLastScreen.x, y: current.y - panLastScreen.y });
+    props.editor.camera.panByScreenDelta({
+      x: current.x - panLastScreen.x,
+      y: current.y - panLastScreen.y,
+    });
     panLastScreen = current;
     draw();
     return;
@@ -137,14 +149,14 @@ function onPointerUp(evt: PointerEvent): void {
   if (event) props.editor.handlePointerUp(event);
 }
 function onPointerCancel(): void {
-  props.editor.handleKeyDown({ key: 'Escape', shiftKey: false, ctrlKey: false, altKey: false });
+  props.editor.handleKeyDown({ key: "Escape", shiftKey: false, ctrlKey: false, altKey: false });
   draw();
 }
 
 const HANDLED_KEYS = new Set(["Enter", "Escape", "Backspace", "Delete"]);
 
 function onKeyDown(evt: KeyboardEvent): void {
-  if (evt.code === 'Space') {
+  if (evt.code === "Space") {
     if (!evt.repeat) spacePressed.value = true;
     evt.preventDefault();
     return;
@@ -159,7 +171,7 @@ function onKeyDown(evt: KeyboardEvent): void {
 }
 
 function onKeyUp(evt: KeyboardEvent): void {
-  if (evt.code === 'Space') {
+  if (evt.code === "Space") {
     spacePressed.value = false;
     isPanning.value = false;
     panLastScreen = null;
@@ -182,10 +194,13 @@ function zoomBy(factor: number): void {
   draw();
 }
 function resetView(): void {
-  props.editor.camera.setState({ center: { x: 0, y: 0 }, zoom: 50 });
+  props.editor.camera.reset();
   draw();
 }
-function toggleGrid(): void { showGrid.value = !showGrid.value; draw(); }
+function toggleGrid(): void {
+  showGrid.value = !showGrid.value;
+  draw();
+}
 defineExpose({ zoomBy, resetView, toggleGrid, showGrid });
 
 onMounted(() => {
@@ -200,7 +215,7 @@ onMounted(() => {
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener('pointercancel', onPointerCancel);
+  canvas.addEventListener("pointercancel", onPointerCancel);
   window.addEventListener("pointerup", onPointerUp);
   canvas.addEventListener("keydown", onKeyDown);
   canvas.addEventListener("keyup", onKeyUp);
@@ -210,7 +225,10 @@ onMounted(() => {
     props.editor.on("projectChanged", draw),
     props.editor.on("selectionChanged", draw),
     props.editor.on("floorChanged", draw),
-    props.editor.on("toolChanged", () => { canvas.focus({ preventScroll: true }); draw(); }),
+    props.editor.on("toolChanged", () => {
+      canvas.focus({ preventScroll: true });
+      draw();
+    }),
   ];
 });
 
@@ -219,7 +237,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   canvas?.removeEventListener("pointerdown", onPointerDown);
   canvas?.removeEventListener("pointermove", onPointerMove);
-  canvas?.removeEventListener('pointercancel', onPointerCancel);
+  canvas?.removeEventListener("pointercancel", onPointerCancel);
   window.removeEventListener("pointerup", onPointerUp);
   canvas?.removeEventListener("keydown", onKeyDown);
   canvas?.removeEventListener("keyup", onKeyUp);

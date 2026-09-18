@@ -1,5 +1,8 @@
 import { createNavigationEdge, createNavigationNode, distance } from "@indoor/core";
-import { AddNavigationEdgeCommand, AddNavigationNodeCommand } from "../commands/NavigationCommands.js";
+import {
+  AddNavigationEdgeCommand,
+  AddNavigationNodeCommand,
+} from "../commands/NavigationCommands.js";
 import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
 
@@ -66,7 +69,11 @@ export class NavigationTool implements EditorTool {
       this.fromNodeId = null;
       if (!fromNode) return;
 
-      const edge = createNavigationEdge(fromNode.id, hitNode.id, distance(fromNode.position, hitNode.position));
+      const edge = createNavigationEdge(
+        fromNode.id,
+        hitNode.id,
+        distance(fromNode.position, hitNode.position),
+      );
       this.context.executeCommand(new AddNavigationEdgeCommand(floor, edge));
       this.context.selection.select(edge.id);
       this.fromNodeId = hitNode.id;
@@ -74,14 +81,23 @@ export class NavigationTool implements EditorTool {
     }
 
     const point = this.context.snapping.resolve(event.worldPoint, { floor });
-    const node = createNavigationNode(floor.id, point, "normal");
+    const node = createNavigationNode(
+      floor.id,
+      point,
+      "normal",
+      `노드 ${floor.navigation.nodes.length + 1}`,
+    );
     this.context.executeCommand(new AddNavigationNodeCommand(floor, node));
     this.context.selection.select(node.id);
 
     if (this.fromNodeId) {
       const fromNode = floor.navigation.nodes.find((n) => n.id === this.fromNodeId);
       if (fromNode) {
-        const edge = createNavigationEdge(fromNode.id, node.id, distance(fromNode.position, node.position));
+        const edge = createNavigationEdge(
+          fromNode.id,
+          node.id,
+          distance(fromNode.position, node.position),
+        );
         this.context.executeCommand(new AddNavigationEdgeCommand(floor, edge));
       }
     }

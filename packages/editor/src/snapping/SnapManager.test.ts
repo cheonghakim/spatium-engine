@@ -7,25 +7,26 @@ import { SnapManager } from "./SnapManager.js";
 describe("SnapManager", () => {
   it("returns the raw point when no provider matches", () => {
     const manager = new SnapManager();
-    manager.register(new GridSnap(1, 0.1));
     const floor = createFloor("1F", 1);
 
     const result = manager.resolve({ x: 1.5, y: 1.5 }, { floor });
     expect(result).toEqual({ x: 1.5, y: 1.5 });
   });
 
-  it("snaps to the grid when within threshold", () => {
+  it("always rounds to the grid while enabled, even far from any grid line", () => {
     const manager = new SnapManager();
-    manager.register(new GridSnap(1, 0.2));
+    manager.register(new GridSnap(1));
     const floor = createFloor("1F", 1);
 
-    const result = manager.resolve({ x: 1.95, y: 3.05 }, { floor });
-    expect(result).toEqual({ x: 2, y: 3 });
+    // Exactly halfway between grid lines — a small proximity threshold would
+    // decline to snap this, which is the bug being guarded against here.
+    const result = manager.resolve({ x: 1.5, y: 1.5 }, { floor });
+    expect(result).toEqual({ x: 2, y: 2 });
   });
 
   it("prefers whichever provider's result is closest to the input point", () => {
     const manager = new SnapManager();
-    manager.register(new GridSnap(1, 0.5));
+    manager.register(new GridSnap(1));
     manager.register(new VertexSnap(0.5));
 
     const floor = createFloor("1F", 1);
@@ -53,7 +54,7 @@ describe("SnapManager", () => {
 
   it("does nothing when disabled", () => {
     const manager = new SnapManager();
-    manager.register(new GridSnap(1, 1));
+    manager.register(new GridSnap(1));
     manager.setEnabled(false);
 
     const floor = createFloor("1F", 1);

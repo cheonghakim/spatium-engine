@@ -106,4 +106,41 @@ describe("findShortestPath", () => {
     expect(result?.nodeIds).toEqual(["A", "B"]);
     expect(result?.distance).toBe(3);
   });
+
+  it("finds the correct-length path quickly on a large grid graph", () => {
+    // ~2000 nodes on a 45x45 grid, each connected to its right/up neighbor.
+    // This is a pure performance check for the MinHeap-backed open set —
+    // the old O(V) linear scan per pop would make this noticeably slower,
+    // though the generous time budget below is chosen to avoid flakiness
+    // rather than to precisely characterize either implementation.
+    const gridSize = 45;
+    const nodes: NavigationNode[] = [];
+    const edges: NavigationEdge[] = [];
+    const idAt = (x: number, y: number) => `n-${x}-${y}`;
+
+    for (let x = 0; x < gridSize; x++) {
+      for (let y = 0; y < gridSize; y++) {
+        nodes.push(node(idAt(x, y), x, y));
+      }
+    }
+    for (let x = 0; x < gridSize; x++) {
+      for (let y = 0; y < gridSize; y++) {
+        if (x + 1 < gridSize) {
+          edges.push(edge(`${idAt(x, y)}->right`, idAt(x, y), idAt(x + 1, y), 1));
+        }
+        if (y + 1 < gridSize) {
+          edges.push(edge(`${idAt(x, y)}->up`, idAt(x, y), idAt(x, y + 1), 1));
+        }
+      }
+    }
+
+    const graph: NavigationGraph = { nodes, edges };
+    const start = performance.now();
+    const result = findShortestPath(graph, idAt(0, 0), idAt(gridSize - 1, gridSize - 1));
+    const elapsedMs = performance.now() - start;
+
+    expect(result).not.toBeNull();
+    expect(result?.distance).toBe((gridSize - 1) * 2);
+    expect(elapsedMs).toBeLessThan(500);
+  });
 });

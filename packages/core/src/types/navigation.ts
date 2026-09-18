@@ -9,6 +9,9 @@ export interface NavigationNode {
   position: Point;
 
   type: NavigationNodeType;
+
+  /** User-assigned label (e.g. "정문", "동쪽 계단") so nodes are recognizable anywhere they're listed — falls back to type + id when unset. */
+  name?: string;
 }
 
 export type NavigationEdgeType = "walk" | "stairs" | "elevator" | "escalator";

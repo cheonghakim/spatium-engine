@@ -8,12 +8,22 @@ import {
   type Space,
   type Wall,
 } from "@indoor/core";
+import type { Command } from "../commands/Command.js";
+import { CompoundCommand } from "../commands/CompoundCommand.js";
+import { ChangePropertyCommand } from "../commands/PropertyCommands.js";
 import { DeleteSpaceCommand } from "../commands/SpaceCommands.js";
-import { MoveVertexCommand, AddVertexCommand, DeleteVertexCommand } from "../commands/VertexCommands.js";
+import {
+  MoveVertexCommand,
+  AddVertexCommand,
+  DeleteVertexCommand,
+} from "../commands/VertexCommands.js";
 import { DeleteEntranceCommand } from "../commands/EntranceCommands.js";
 import { DeletePOICommand, MovePOICommand } from "../commands/POICommands.js";
 import { DeleteWallCommand, MoveWallCommand } from "../commands/WallCommands.js";
-import { DeleteNavigationNodeCommand, DeleteNavigationEdgeCommand } from "../commands/NavigationCommands.js";
+import {
+  DeleteNavigationNodeCommand,
+  DeleteNavigationEdgeCommand,
+} from "../commands/NavigationCommands.js";
 import { findObjectKind, type SelectableKind } from "../selection/findObjectKind.js";
 import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
@@ -41,16 +51,26 @@ export class SelectTool implements EditorTool {
 
   private drag: PoiDrag | null = null;
   private vertexDrag: VertexDrag | null = null;
-  private wallDrag: { wall: Wall; start: Point; end: Point; origin: Point; handle: 'start' | 'end' | 'body' } | null = null;
+  private wallDrag: {
+    wall: Wall;
+    start: Point;
+    end: Point;
+    origin: Point;
+    handle: "start" | "end" | "body";
+  } | null = null;
 
   constructor(private readonly context: ToolContext) {}
 
   activate(): void {}
 
   deactivate(): void {
-    if (this.wallDrag) { this.wallDrag.wall.start = this.wallDrag.start; this.wallDrag.wall.end = this.wallDrag.end; }
+    if (this.wallDrag) {
+      this.wallDrag.wall.start = this.wallDrag.start;
+      this.wallDrag.wall.end = this.wallDrag.end;
+    }
     if (this.drag) this.drag.poi.position = this.drag.originalPosition;
-    if (this.vertexDrag) this.vertexDrag.space.polygon[this.vertexDrag.vertexIndex] = this.vertexDrag.originalPoint;
+    if (this.vertexDrag)
+      this.vertexDrag.space.polygon[this.vertexDrag.vertexIndex] = this.vertexDrag.originalPoint;
     this.wallDrag = null;
     this.drag = null;
     this.vertexDrag = null;
@@ -66,11 +86,22 @@ export class SelectTool implements EditorTool {
     // If a Space is already selected, its own vertices/edges take priority —
     // click a vertex to drag it, or click its boundary to insert a new one.
     const currentEntry = this.context.selection.current[0];
-    const selectedWall = floor.walls.find(w => w.id === currentEntry?.id);
+    const selectedWall = floor.walls.find((w) => w.id === currentEntry?.id);
     if (selectedWall && !event.shiftKey) {
-      const handle = distance(selectedWall.start, event.worldPoint) <= hitRadiusWorld ? 'start' : distance(selectedWall.end, event.worldPoint) <= hitRadiusWorld ? 'end' : null;
+      const handle =
+        distance(selectedWall.start, event.worldPoint) <= hitRadiusWorld
+          ? "start"
+          : distance(selectedWall.end, event.worldPoint) <= hitRadiusWorld
+            ? "end"
+            : null;
       if (handle) {
-        this.wallDrag = { wall: selectedWall, start: { ...selectedWall.start }, end: { ...selectedWall.end }, origin: event.worldPoint, handle };
+        this.wallDrag = {
+          wall: selectedWall,
+          start: { ...selectedWall.start },
+          end: { ...selectedWall.end },
+          origin: event.worldPoint,
+          handle,
+        };
         return;
       }
     }
@@ -91,7 +122,9 @@ export class SelectTool implements EditorTool {
 
         const insertion = findEdgeInsertion(event.worldPoint, selectedSpace, hitRadiusWorld);
         if (insertion) {
-          this.context.executeCommand(new AddVertexCommand(selectedSpace, insertion.index, insertion.point));
+          this.context.executeCommand(
+            new AddVertexCommand(selectedSpace, insertion.index, insertion.point),
+          );
           this.context.selection.select(selectedSpace.id, insertion.index);
           return;
         }
@@ -115,10 +148,20 @@ export class SelectTool implements EditorTool {
       const poi = floor.pois.find((p) => p.id === hit.id);
       if (poi) this.drag = { poi, originalPosition: { ...poi.position } };
     }
-    if (hit.kind === 'wall' && !event.shiftKey) {
-      const wall = floor.walls.find(w => w.id === hit.id)!;
-      this.wallDrag = { wall, start: { ...wall.start }, end: { ...wall.end }, origin: event.worldPoint,
-        handle: distance(wall.start, event.worldPoint) <= hitRadiusWorld ? 'start' : distance(wall.end, event.worldPoint) <= hitRadiusWorld ? 'end' : 'body' };
+    if (hit.kind === "wall" && !event.shiftKey) {
+      const wall = floor.walls.find((w) => w.id === hit.id)!;
+      this.wallDrag = {
+        wall,
+        start: { ...wall.start },
+        end: { ...wall.end },
+        origin: event.worldPoint,
+        handle:
+          distance(wall.start, event.worldPoint) <= hitRadiusWorld
+            ? "start"
+            : distance(wall.end, event.worldPoint) <= hitRadiusWorld
+              ? "end"
+              : "body",
+      };
     }
 
     this.context.requestRender();
@@ -129,23 +172,33 @@ export class SelectTool implements EditorTool {
       const drag = this.wallDrag;
       let point = event.worldPoint;
       const floor = this.context.getActiveFloor();
-      if (floor && !event.altKey && drag.handle !== 'body') point = this.context.snapping.resolve(point, { floor, excludeId: drag.wall.id });
-      if (drag.handle === 'body') {
-        const dx = point.x-drag.origin.x, dy = point.y-drag.origin.y;
-        drag.wall.start = { x: drag.start.x+dx, y: drag.start.y+dy };
-        drag.wall.end = { x: drag.end.x+dx, y: drag.end.y+dy };
+      if (floor && !event.altKey && drag.handle !== "body")
+        point = this.context.snapping.resolve(point, { floor, excludeId: drag.wall.id });
+      if (drag.handle === "body") {
+        const dx = point.x - drag.origin.x,
+          dy = point.y - drag.origin.y;
+        drag.wall.start = { x: drag.start.x + dx, y: drag.start.y + dy };
+        drag.wall.end = { x: drag.end.x + dx, y: drag.end.y + dy };
       } else {
-        const anchor = drag.handle === 'start' ? drag.end : drag.start;
-        if (event.shiftKey) point = Math.abs(point.x-anchor.x) > Math.abs(point.y-anchor.y) ? {x:point.x,y:anchor.y} : {x:anchor.x,y:point.y};
+        const anchor = drag.handle === "start" ? drag.end : drag.start;
+        if (event.shiftKey)
+          point =
+            Math.abs(point.x - anchor.x) > Math.abs(point.y - anchor.y)
+              ? { x: point.x, y: anchor.y }
+              : { x: anchor.x, y: point.y };
         if (distance(point, anchor) < 0.01) return;
         drag.wall[drag.handle] = { ...point };
       }
-      this.context.requestRender(); return;
+      this.context.requestRender();
+      return;
     }
     if (this.vertexDrag) {
       const floor = this.context.getActiveFloor();
       const point = floor
-        ? this.context.snapping.resolve(event.worldPoint, { floor, excludeId: this.vertexDrag.space.id })
+        ? this.context.snapping.resolve(event.worldPoint, {
+            floor,
+            excludeId: this.vertexDrag.space.id,
+          })
         : event.worldPoint;
       this.vertexDrag.space.polygon[this.vertexDrag.vertexIndex] = point;
       this.context.requestRender();
@@ -164,9 +217,13 @@ export class SelectTool implements EditorTool {
   onPointerUp(): void {
     if (this.wallDrag) {
       const { wall, start, end } = this.wallDrag;
-      const finalStart = { ...wall.start }, finalEnd = { ...wall.end };
-      wall.start = start; wall.end = end; this.wallDrag = null;
-      if (distance(start, finalStart) + distance(end, finalEnd) > 0.00001) this.context.executeCommand(new MoveWallCommand(wall, finalStart, finalEnd));
+      const finalStart = { ...wall.start },
+        finalEnd = { ...wall.end };
+      wall.start = start;
+      wall.end = end;
+      this.wallDrag = null;
+      if (distance(start, finalStart) + distance(end, finalEnd) > 0.00001)
+        this.context.executeCommand(new MoveWallCommand(wall, finalStart, finalEnd));
       return;
     }
     if (this.vertexDrag) {
@@ -187,7 +244,11 @@ export class SelectTool implements EditorTool {
   }
 
   onKeyDown(event: EditorKeyboardEvent): void {
-    if (event.key === 'Escape') { this.deactivate(); this.context.requestRender(); return; }
+    if (event.key === "Escape") {
+      this.deactivate();
+      this.context.requestRender();
+      return;
+    }
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     this.deactivate();
 
@@ -207,16 +268,8 @@ export class SelectTool implements EditorTool {
     }
 
     const kind = findObjectKind(floor, entry.id);
-    if (kind === "space") this.context.executeCommand(new DeleteSpaceCommand(floor, entry.id));
-    else if (kind === "wall") this.context.executeCommand(new DeleteWallCommand(floor, entry.id));
-    else if (kind === "entrance") this.context.executeCommand(new DeleteEntranceCommand(floor, entry.id));
-    else if (kind === "poi") this.context.executeCommand(new DeletePOICommand(floor, entry.id));
-    else if (kind === "navigationNode") {
-      this.context.executeCommand(new DeleteNavigationNodeCommand(floor, entry.id));
-    } else if (kind === "navigationEdge") {
-      this.context.executeCommand(new DeleteNavigationEdgeCommand(floor, entry.id));
-    } else return;
-
+    if (!kind) return;
+    this.context.executeCommand(buildDeleteCommand(this.context, floor, entry.id, kind));
     this.context.selection.clear();
   }
 
@@ -237,7 +290,11 @@ export class SelectTool implements EditorTool {
     for (const edge of floor.navigation.edges) {
       const from = floor.navigation.nodes.find((n) => n.id === edge.from);
       const to = floor.navigation.nodes.find((n) => n.id === edge.to);
-      if (from && to && distanceToSegment(point, from.position, to.position).distance <= hitRadiusWorld) {
+      if (
+        from &&
+        to &&
+        distanceToSegment(point, from.position, to.position).distance <= hitRadiusWorld
+      ) {
         return { id: edge.id, kind: "navigationEdge" };
       }
     }
@@ -252,6 +309,72 @@ export class SelectTool implements EditorTool {
     }
     return null;
   }
+}
+
+/**
+ * Deleting an object can leave dangling cross-references elsewhere (an
+ * Entrance's spaceA/spaceB/wallId, a POI's spaceId, a NavigationEdge's
+ * from/to) — bundle the primary delete with commands that clear/remove those
+ * references so the whole thing undoes as one step.
+ *
+ * Entrance/POI/Wall references are only ever stored on the same floor as the
+ * object they reference, so those cases only need to search `floor`'s own
+ * arrays. A NavigationNode is different: IndoorEditor.linkFloorNode can store
+ * a cross-floor edge on *either* endpoint's floor (whichever node was the
+ * "source" when the link was created), so deleting a node has to search
+ * every floor of the building that owns it via `context.findNodeBuilding`,
+ * not just the active floor.
+ */
+function buildDeleteCommand(
+  context: ToolContext,
+  floor: Floor,
+  id: string,
+  kind: SelectableKind,
+): Command {
+  const commands: Command[] = [];
+
+  if (kind === "space") {
+    for (const entrance of floor.entrances) {
+      if (entrance.spaceA === id)
+        commands.push(
+          new ChangePropertyCommand(entrance, "spaceA", undefined, "Clear Entrance Space"),
+        );
+      if (entrance.spaceB === id)
+        commands.push(
+          new ChangePropertyCommand(entrance, "spaceB", undefined, "Clear Entrance Space"),
+        );
+    }
+    for (const poi of floor.pois) {
+      if (poi.spaceId === id)
+        commands.push(new ChangePropertyCommand(poi, "spaceId", undefined, "Clear POI Space"));
+    }
+    commands.push(new DeleteSpaceCommand(floor, id));
+  } else if (kind === "wall") {
+    for (const entrance of floor.entrances) {
+      if (entrance.wallId === id)
+        commands.push(
+          new ChangePropertyCommand(entrance, "wallId", undefined, "Clear Entrance Wall"),
+        );
+    }
+    commands.push(new DeleteWallCommand(floor, id));
+  } else if (kind === "navigationNode") {
+    const buildingFloors = context.findNodeBuilding(id) ?? [floor];
+    for (const floorInBuilding of buildingFloors) {
+      for (const edge of floorInBuilding.navigation.edges) {
+        if (edge.from === id || edge.to === id)
+          commands.push(new DeleteNavigationEdgeCommand(floorInBuilding, edge.id));
+      }
+    }
+    commands.push(new DeleteNavigationNodeCommand(floor, id));
+  } else if (kind === "entrance") {
+    commands.push(new DeleteEntranceCommand(floor, id));
+  } else if (kind === "poi") {
+    commands.push(new DeletePOICommand(floor, id));
+  } else {
+    commands.push(new DeleteNavigationEdgeCommand(floor, id));
+  }
+
+  return commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!;
 }
 
 function findVertexIndex(point: Point, space: Space, hitRadiusWorld: number): number | null {

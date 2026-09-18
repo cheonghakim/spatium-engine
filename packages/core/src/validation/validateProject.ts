@@ -1,7 +1,13 @@
 import { createId } from "../id.js";
 import type { Building, IndoorProject } from "../types/project.js";
 import type { ValidationIssue } from "./types.js";
-import { validateEntrances, validatePOIs, validateNavigation, validateSpaces } from "./rules.js";
+import {
+  validateEntrances,
+  validatePOIs,
+  validateNavigation,
+  validateSpaces,
+  validateWalls,
+} from "./rules.js";
 
 function validateFloorConnections(building: Building): ValidationIssue[] {
   if (building.floors.length < 2) return [];
@@ -50,11 +56,15 @@ export function validateProject(project: IndoorProject): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
   for (const building of project.buildings) {
+    const buildingNodes = building.floors.flatMap((f) => f.navigation.nodes);
+    const buildingEdges = building.floors.flatMap((f) => f.navigation.edges);
+
     for (const floor of building.floors) {
       issues.push(...validateSpaces(floor));
+      issues.push(...validateWalls(floor));
       issues.push(...validateEntrances(floor));
       issues.push(...validatePOIs(floor));
-      issues.push(...validateNavigation(floor));
+      issues.push(...validateNavigation(floor, buildingNodes, buildingEdges));
     }
     issues.push(...validateFloorConnections(building));
   }

@@ -1,7 +1,24 @@
 import { createId } from "../id.js";
-import { isPolygonSelfIntersecting } from "../geometry/polygon.js";
+import { isPolygonSelfIntersecting, polygonsOverlap } from "../geometry/polygon.js";
+import { distance } from "../geometry/distance.js";
 import type { Floor } from "../types/project.js";
+import type { Space } from "../types/space.js";
+import type { NavigationEdge, NavigationNode } from "../types/navigation.js";
 import type { ValidationIssue } from "./types.js";
+
+/** Below this length (meters) a wall is considered degenerate. */
+const MIN_WALL_LENGTH = 0.01;
+
+/**
+ * Tolerance for the navigation edge distance-sanity check: an edge's stored
+ * `distance` is allowed to diverge from the true geometric distance between
+ * its nodes by whichever is larger of a relative tolerance (20%) or a flat
+ * tolerance (1m), before it's flagged. This keeps the check from firing on
+ * ordinary rounding while still catching edges whose distance is clearly
+ * stale or wrong.
+ */
+const EDGE_DISTANCE_RELATIVE_TOLERANCE = 0.2;
+const EDGE_DISTANCE_MIN_TOLERANCE_METERS = 1;
 
 function issue(
   severity: ValidationIssue["severity"],
@@ -53,6 +70,60 @@ export function validateSpaces(floor: Floor): ValidationIssue[] {
     }
   }
 
+  for (let i = 0; i < floor.spaces.length; i++) {
+    const spaceA = floor.spaces[i] as Space;
+    if (spaceA.polygon.length < 3) continue;
+
+    for (let j = i + 1; j < floor.spaces.length; j++) {
+      const spaceB = floor.spaces[j] as Space;
+      if (spaceB.polygon.length < 3) continue;
+
+      if (polygonsOverlap(spaceA.polygon, spaceB.polygon)) {
+        issues.push(
+          issue(
+            "error",
+            "overlapping-spaces",
+            `Space "${spaceA.properties.name ?? spaceA.id}" overlaps space "${spaceB.properties.name ?? spaceB.id}".`,
+            spaceA.id,
+          ),
+        );
+        issues.push(
+          issue(
+            "error",
+            "overlapping-spaces",
+            `Space "${spaceB.properties.name ?? spaceB.id}" overlaps space "${spaceA.properties.name ?? spaceA.id}".`,
+            spaceB.id,
+          ),
+        );
+      }
+    }
+  }
+
+  return issues;
+}
+
+export function validateWalls(floor: Floor): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  for (const wall of floor.walls) {
+    if (distance(wall.start, wall.end) < MIN_WALL_LENGTH) {
+      issues.push(
+        issue("error", "degenerate-wall", `Wall ${wall.id} has zero or near-zero length.`, wall.id),
+      );
+    }
+
+    if (wall.thickness <= 0) {
+      issues.push(
+        issue(
+          "error",
+          "invalid-wall-thickness",
+          `Wall ${wall.id} has non-positive thickness.`,
+          wall.id,
+        ),
+      );
+    }
+  }
+
   return issues;
 }
 
@@ -63,20 +134,62 @@ export function validateEntrances(floor: Floor): ValidationIssue[] {
   for (const entrance of floor.entrances) {
     for (const key of ["width", "height", "depth", "stepCount"] as const) {
       const value = entrance[key];
-      if (value !== undefined && (!Number.isFinite(value) || value <= 0 || (key === "stepCount" && (!Number.isInteger(value) || value < 2 || value > 200)))) {
-        issues.push(issue("error", "invalid-element-dimension", `Element ${entrance.id}: invalid ${key}.`, entrance.id));
+      if (
+        value !== undefined &&
+        (!Number.isFinite(value) ||
+          value <= 0 ||
+          (key === "stepCount" && (!Number.isInteger(value) || value < 2 || value > 200)))
+      ) {
+        issues.push(
+          issue(
+            "error",
+            "invalid-element-dimension",
+            `Element ${entrance.id}: invalid ${key}.`,
+            entrance.id,
+          ),
+        );
       }
     }
     for (const key of ["sillHeight", "landingDepth", "rotation", "doorOpenAngle"] as const) {
       const value = entrance[key];
-      if (value !== undefined && (!Number.isFinite(value) || (["sillHeight", "landingDepth"].includes(key) && value < 0))) {
-        issues.push(issue("error", "invalid-element-dimension", `Element ${entrance.id}: invalid ${key}.`, entrance.id));
+      if (
+        value !== undefined &&
+        (!Number.isFinite(value) || (["sillHeight", "landingDepth"].includes(key) && value < 0))
+      ) {
+        issues.push(
+          issue(
+            "error",
+            "invalid-element-dimension",
+            `Element ${entrance.id}: invalid ${key}.`,
+            entrance.id,
+          ),
+        );
       }
     }
-    const wall = floor.walls.find(w => w.id === entrance.wallId);
-    if (entrance.wallId && !wall) issues.push(issue("warning", "missing-host-wall", `Element ${entrance.id}: connected wall was removed.`, entrance.id));
-    if (wall && (entrance.height ?? (entrance.type === "window" ? 1.2 : 2.1)) + (entrance.type === "window" ? entrance.sillHeight ?? 0.9 : 0) > (wall.height ?? 2.4)) {
-      issues.push(issue("warning", "opening-above-wall", `Element ${entrance.id}: opening exceeds wall height and will be clipped.`, entrance.id));
+    const wall = floor.walls.find((w) => w.id === entrance.wallId);
+    if (entrance.wallId && !wall)
+      issues.push(
+        issue(
+          "warning",
+          "missing-host-wall",
+          `Element ${entrance.id}: connected wall was removed.`,
+          entrance.id,
+        ),
+      );
+    if (
+      wall &&
+      (entrance.height ?? (entrance.type === "window" ? 1.2 : 2.1)) +
+        (entrance.type === "window" ? (entrance.sillHeight ?? 0.9) : 0) >
+        (wall.height ?? 2.4)
+    ) {
+      issues.push(
+        issue(
+          "warning",
+          "opening-above-wall",
+          `Element ${entrance.id}: opening exceeds wall height and will be clipped.`,
+          entrance.id,
+        ),
+      );
     }
     const hasA = entrance.spaceA !== undefined;
     const hasB = entrance.spaceB !== undefined;
@@ -136,28 +249,86 @@ export function validatePOIs(floor: Floor): ValidationIssue[] {
   return issues;
 }
 
-export function validateNavigation(floor: Floor): ValidationIssue[] {
+/**
+ * Validates one floor's navigation graph.
+ *
+ * A stairs/elevator/escalator edge can legitimately reference a node that
+ * lives on a *different* floor (see mergeGraph.ts) — the edge itself is
+ * just stored in one floor's edge list. So both the "does this node exist"
+ * check and the "is this node connected to anything" check need to see
+ * every floor's nodes/edges, not just this floor's own — otherwise every
+ * cross-floor edge gets wrongly flagged as broken, and the nodes at its
+ * far end get wrongly flagged as disconnected. Callers (validateProject)
+ * pass the whole building's nodes/edges for that reason.
+ */
+export function validateNavigation(
+  floor: Floor,
+  buildingNodes: NavigationNode[] = floor.navigation.nodes,
+  buildingEdges: NavigationEdge[] = floor.navigation.edges,
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const { nodes, edges } = floor.navigation;
-  const nodeIds = new Set(nodes.map((n) => n.id));
-  const connectedNodeIds = new Set<string>();
+  const nodesById = new Map(buildingNodes.map((n) => [n.id, n]));
 
   for (const edge of edges) {
-    const fromOk = nodeIds.has(edge.from);
-    const toOk = nodeIds.has(edge.to);
+    const fromNode = nodesById.get(edge.from);
+    const toNode = nodesById.get(edge.to);
 
-    if (!fromOk || !toOk) {
+    if (!fromNode || !toNode) {
       issues.push(
         issue(
           "error",
           "broken-navigation-edge",
-          `Navigation edge ${edge.id} references a missing node (${!fromOk ? edge.from : edge.to}).`,
+          `Navigation edge ${edge.id} references a missing node (${!fromNode ? edge.from : edge.to}).`,
           edge.id,
         ),
       );
       continue;
     }
 
+    if (fromNode.floorId === toNode.floorId) {
+      const actualDistance = distance(fromNode.position, toNode.position);
+      const tolerance = Math.max(
+        actualDistance * EDGE_DISTANCE_RELATIVE_TOLERANCE,
+        EDGE_DISTANCE_MIN_TOLERANCE_METERS,
+      );
+      if (Math.abs(edge.distance - actualDistance) > tolerance) {
+        issues.push(
+          issue(
+            "warning",
+            "inaccurate-edge-distance",
+            `Navigation edge ${edge.id} distance (${edge.distance}) diverges from the geometric distance between its nodes (${actualDistance.toFixed(2)}).`,
+            edge.id,
+          ),
+        );
+      }
+    }
+  }
+
+  const duplicateGroups = new Map<string, NavigationEdge[]>();
+  for (const edge of edges) {
+    const key = [edge.from, edge.to].sort().join("::");
+    const group = duplicateGroups.get(key);
+    if (group) group.push(edge);
+    else duplicateGroups.set(key, [edge]);
+  }
+  for (const group of duplicateGroups.values()) {
+    if (group.length <= 1) continue;
+    for (const edge of group) {
+      issues.push(
+        issue(
+          "warning",
+          "duplicate-navigation-edge",
+          `Navigation edge ${edge.id} duplicates another edge between the same two nodes (${edge.from} <-> ${edge.to}).`,
+          edge.id,
+        ),
+      );
+    }
+  }
+
+  const connectedNodeIds = new Set<string>();
+  for (const edge of buildingEdges) {
+    if (!nodesById.has(edge.from) || !nodesById.has(edge.to)) continue;
     connectedNodeIds.add(edge.from);
     connectedNodeIds.add(edge.to);
   }
