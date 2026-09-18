@@ -1,68 +1,95 @@
 /* Design tokens — single source of truth for color, spacing, radius,
    shadow and motion across the studio UI. Component styles should
-   reference these variables instead of hardcoding new values. */
+   reference these variables instead of hardcoding new values.
+
+   Palette follows a professional desktop CAD/GIS editor: charcoal/slate
+   surfaces, muted structural colors, and a single restrained accent
+   reserved for selection and primary actions. */
 :root {
   color-scheme: dark;
 
-  /* Surfaces (dark → light) */
-  --bg-app: #121216;
-  --surface-1: #18181d;
-  --surface-2: #1e1e26;
-  --surface-3: #262631;
-  --surface-hover: #2d2d3a;
-  --overlay: rgba(18, 18, 22, 0.9);
+  /* Surfaces (app -> panel -> raised) */
+  --bg-app: #15171b;
+  --surface-1: #1b1e23; /* panels: sidebars, topbar, statusbar */
+  --surface-2: #22262d; /* inputs, secondary panels, canvas chrome */
+  --surface-3: #282c34; /* raised: menus, popovers, selected rows */
+  --surface-hover: #2a2f38;
+  --overlay: rgba(21, 23, 27, 0.92);
+  --canvas-bg: #191c21;
 
   /* Borders */
-  --border-subtle: #26262f;
-  --border: #34343f;
-  --border-strong: #454552;
+  --border-subtle: #24272d;
+  --border: #30353d;
+  --border-strong: #3c424c;
 
-  /* Text */
-  --text-primary: #f1f1f6;
-  --text-secondary: #c4c4cf;
-  --text-tertiary: #96969f;
-  --text-disabled: #6a6a73;
+  /* Text (primary -> secondary -> tertiary -> disabled) */
+  --text-primary: #d7dae0;
+  --text-secondary: #aab0ba;
+  --text-tertiary: #8d949f;
+  --text-disabled: #626a75;
 
-  /* Brand accent */
-  --accent: #5865f2;
-  --accent-hover: #6c77f5;
-  --accent-active: #4752c9;
-  --accent-soft: rgba(88, 101, 242, 0.16);
-  --accent-border: rgba(88, 101, 242, 0.55);
-  --accent-contrast: #ffffff;
+  /* Accent — selection & primary actions only */
+  --accent: #6675e8;
+  --accent-hover: #7684ec;
+  --accent-active: #5563c9;
+  --accent-soft: rgba(102, 117, 232, 0.16);
+  --accent-border: rgba(102, 117, 232, 0.5);
+  --accent-contrast: #f5f6fa;
 
   /* Semantic */
-  --success: #4ade80;
-  --success-soft: rgba(74, 222, 128, 0.14);
-  --success-border: rgba(74, 222, 128, 0.45);
-  --danger: #ff6b6b;
-  --danger-soft: rgba(255, 107, 107, 0.14);
-  --danger-border: rgba(255, 107, 107, 0.4);
-  --warning: #ffc85c;
-  --warning-soft: rgba(255, 200, 92, 0.14);
-  --info: #5a9cff;
-  --info-soft: rgba(90, 156, 255, 0.16);
+  --success: #4caf82;
+  --success-soft: rgba(76, 175, 130, 0.14);
+  --success-border: rgba(76, 175, 130, 0.4);
+  --danger: #d96969;
+  --danger-soft: rgba(217, 105, 105, 0.14);
+  --danger-border: rgba(217, 105, 105, 0.4);
+  --warning: #d6a84f;
+  --warning-soft: rgba(214, 168, 79, 0.14);
+  --warning-border: rgba(214, 168, 79, 0.4);
+  --info: #6ea8d9;
+  --info-soft: rgba(110, 168, 217, 0.14);
+  --info-border: rgba(110, 168, 217, 0.4);
 
-  /* Radius scale */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 20px;
+  /* Drawing colors (canvas/render.ts mirrors these as hex literals) */
+  --draw-line: #b8bdc7;
+  --draw-selected: #6e8cff;
+  --draw-muted: #565c66;
 
-  /* Shadow scale */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.5);
+  /* Radius scale — small and rectangular, not decorative */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 
-  /* Motion */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Shadow scale — subtle, no glow */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* Motion — short, quiet transitions only */
+  --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
   --dur-fast: 120ms;
-  --dur: 180ms;
+  --dur: 160ms;
 
-  /* Type */
-  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  /* Spacing scale (4/8px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Type scale */
+  --font-size-caption: 11px;
+  --font-size-secondary: 12px;
+  --font-size-body: 13px;
+  --font-size-section: 12px;
+  --control-height: 28px;
+
+  --font-sans: "Inter", "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "SFMono-Regular", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 * {
@@ -79,6 +106,7 @@ body {
   background: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-sans);
+  font-size: var(--font-size-body);
 }
 
 ::selection {
@@ -112,21 +140,28 @@ summary {
   color: inherit;
 }
 
+/* Base button = secondary emphasis. Compose with .btn-ghost / .btn-primary
+   for other priority levels; see App.vue's topbar for the hierarchy. */
 button,
 summary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: var(--surface-3);
+  height: var(--control-height);
+  background: var(--surface-2);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  font-size: var(--font-size-secondary);
+  line-height: 1;
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
 }
 button:hover:not(:disabled),
 summary:hover {
@@ -134,37 +169,118 @@ summary:hover {
   border-color: var(--border-strong);
 }
 button:active:not(:disabled) {
-  transform: translateY(1px);
+  background: var(--surface-1);
 }
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: not-allowed;
 }
-button.active,
-button[aria-pressed="true"] {
+
+/* Primary — reserved for exactly one action per surface (e.g. Export). */
+button.btn-primary,
+summary.btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-contrast);
 }
-button.active:hover:not(:disabled),
-button[aria-pressed="true"]:hover:not(:disabled) {
+button.btn-primary:hover:not(:disabled),
+summary.btn-primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+}
+button.btn-primary:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+}
+
+/* Ghost — lowest emphasis: frequent, low-risk actions (undo/redo, icon toggles). */
+button.btn-ghost,
+label.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+}
+button.btn-ghost:hover:not(:disabled),
+label.btn-ghost:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+/* Icon-only square buttons (undo/redo, panel collapse, zoom HUD). */
+button.btn-icon {
+  width: var(--control-height);
+  padding: 0;
+  flex-shrink: 0;
+}
+
+label.upload-button,
+label.compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-height);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  font-size: var(--font-size-secondary);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+label.upload-button:hover,
+label.compact:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+/* Generic toggle state — soft accent wash, not a full fill. Components with
+   a more specific selected affordance (rail tools, tabs) override this. */
+button.active,
+button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+button.active:hover:not(:disabled),
+button[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  filter: brightness(1.15);
 }
 
 select,
 input[type="text"],
 input[type="number"] {
+  height: var(--control-height);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
-  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+  padding: 0 8px;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
 }
 select:hover,
 input[type="text"]:hover,
 input[type="number"]:hover {
   border-color: var(--border-strong);
+}
+select:focus-visible,
+input[type="text"]:focus-visible,
+input[type="number"]:focus-visible {
+  border-color: var(--accent);
+}
+/* Hide native number spinners — numeric fields use NumberField's own stepper. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  appearance: textfield;
 }
 
 summary {
@@ -179,8 +295,8 @@ summary::marker {
 
 input[type="checkbox"] {
   appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
   display: inline-grid;
   place-content: center;
@@ -188,7 +304,9 @@ input[type="checkbox"] {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xs);
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 input[type="checkbox"]:hover {
   border-color: var(--accent-border);
@@ -217,21 +335,23 @@ input[type="range"] {
 }
 input[type="range"]::-webkit-slider-thumb {
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   background: var(--accent);
   border: 2px solid var(--bg-app);
   cursor: pointer;
-  transition: transform var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
 }
 input[type="range"]:hover::-webkit-slider-thumb {
   background: var(--accent-hover);
-  transform: scale(1.15);
+  transform: scale(1.1);
 }
 input[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   background: var(--accent);
   border: 2px solid var(--bg-app);
@@ -250,4 +370,30 @@ select:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent-border);
   outline-offset: 2px;
+}
+
+kbd {
+  font: 600 9px/14px var(--font-mono);
+  color: var(--text-tertiary);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  min-width: 14px;
+  padding: 0 3px;
+  text-align: center;
+  display: inline-block;
+}
+
+/* Section headings used across all side panels — keep identical everywhere
+   so the whole app reads as one design language. */
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  font-size: var(--font-size-section);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
 }

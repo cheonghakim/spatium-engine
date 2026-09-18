@@ -16,6 +16,9 @@ const props = defineProps<{ editor: IndoorEditor }>();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const showGrid = ref(true);
+/** Mirrors EditorCamera's default zoom (screen px per world meter) so the HUD can render a 100% baseline; the camera itself doesn't expose this constant. */
+const BASE_ZOOM = 50;
+const zoomPercent = ref(100);
 const spacePressed = ref(false);
 const isPanning = ref(false);
 let panLastScreen: Point | null = null;
@@ -57,6 +60,7 @@ function currentRoutePoints(): Array<Point | null> {
 
 function draw(): void {
   if (!ctx) return;
+  zoomPercent.value = Math.round((props.editor.camera.getState().zoom / BASE_ZOOM) * 100);
   const draft = props.editor.draft.current;
   const visibleDraft =
     !draft?.floorId || draft.floorId === props.editor.getActiveFloor()?.id ? draft : null;
@@ -201,7 +205,7 @@ function toggleGrid(): void {
   showGrid.value = !showGrid.value;
   draw();
 }
-defineExpose({ zoomBy, resetView, toggleGrid, showGrid });
+defineExpose({ zoomBy, resetView, toggleGrid, showGrid, zoomPercent });
 
 onMounted(() => {
   const canvas = canvasRef.value;

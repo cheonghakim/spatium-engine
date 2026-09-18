@@ -22,13 +22,11 @@ test("upload, vectorize, edit, exclude, undo, confirm and export", async ({ page
     ctx.stroke();
     return canvas.toDataURL("image/png");
   });
-  await page
-    .locator(".reference-panel input[type=file]")
-    .setInputFiles({
-      name: "plan.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(dataUrl.split(",")[1]!, "base64"),
-    });
+  await page.locator(".reference-panel input[type=file]").setInputFiles({
+    name: "plan.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(dataUrl.split(",")[1]!, "base64"),
+  });
   await page.getByRole("button", { name: "가구 선 줄이기", exact: true }).click();
   await page.getByRole("button", { name: "자동 벡터화", exact: true }).click();
   const review = page.locator(".vectorize-panel");
@@ -56,8 +54,8 @@ test("upload, vectorize, edit, exclude, undo, confirm and export", async ({ page
   await expect(review.getByRole("heading", { name: "벽 (3/4)", exact: true })).toBeVisible();
   await review.getByRole("button", { name: "수정 취소", exact: true }).click();
   await expect(review.getByRole("heading", { name: "벽 (4/4)", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "격자", exact: true }).click();
-  await expect(page.getByRole("button", { name: "격자", exact: true })).toHaveAttribute(
+  await page.getByRole("button", { name: "격자 표시 전환", exact: true }).click();
+  await expect(page.getByRole("button", { name: "격자 표시 전환", exact: true })).toHaveAttribute(
     "aria-pressed",
     "false",
   );
@@ -88,8 +86,8 @@ test("upload, vectorize, edit, exclude, undo, confirm and export", async ({ page
   expect(moved.buildings[0].floors[0].walls[0].start.y).toBeCloseTo(
     project.buildings[0].floors[0].walls[0].start.y - 0.4,
   );
-  await page.getByRole("button", { name: "↶ 실행 취소", exact: true }).click();
-  await page.getByRole("button", { name: "↶ 실행 취소", exact: true }).click();
+  await page.getByRole("button", { name: "실행 취소", exact: true }).click();
+  await page.getByRole("button", { name: "실행 취소", exact: true }).click();
   const undone = await exportProject();
   expect(undone.buildings[0].floors[0].walls).toHaveLength(0);
   expect(undone.buildings[0].floors[0].spaces).toHaveLength(0);

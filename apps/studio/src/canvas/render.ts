@@ -32,31 +32,40 @@ export interface RenderState {
   showGrid?: boolean;
 }
 
+/**
+ * Mirrors the semantic palette in styles/tokens.css (canvas 2D can't read
+ * CSS custom properties without a getComputedStyle round-trip per frame, so
+ * the values are duplicated here as literals — keep the two in sync).
+ * Selection always reads as accent blue; muted grays/teals carry structural
+ * meaning instead of each object type getting its own saturated hue.
+ */
 const COLORS = {
-  background: "#1e1e22",
-  grid: "#2b2b31",
-  spaceFill: "rgba(90, 140, 255, 0.18)",
-  spaceStroke: "#5a8cff",
-  spaceSelectedFill: "rgba(255, 176, 60, 0.25)",
-  spaceSelectedStroke: "#ffb03c",
-  entrance: "#3ddc84",
-  poi: "#ff5c8a",
-  draft: "#ffffff",
-  calibration: "#ff5c5c",
-  draftWallAccepted: "#ff9f3c",
-  draftWallRejected: "#5a5a63",
-  draftSpaceAcceptedFill: "rgba(255, 224, 60, 0.16)",
-  draftSpaceAcceptedStroke: "#ffe03c",
-  draftSpaceRejectedFill: "rgba(90, 90, 99, 0.12)",
-  draftSpaceRejectedStroke: "#5a5a63",
-  wall: "#c7c7cf",
-  wallSelected: "#ffb03c",
-  vertexHandle: "#ffffff",
-  vertexHandleSelected: "#ffb03c",
-  navigationNode: "#b388ff",
-  navigationNodePending: "#ffffff",
-  navigationEdge: "#8865cc",
-  route: "#ffd83c",
+  background: "#191c21",
+  gridMinor: "rgba(255, 255, 255, 0.05)",
+  gridMajor: "rgba(255, 255, 255, 0.11)",
+  spaceFill: "rgba(184, 189, 199, 0.05)",
+  spaceStroke: "#9aa6c8",
+  spaceSelectedFill: "rgba(110, 140, 255, 0.16)",
+  spaceSelectedStroke: "#6e8cff",
+  entrance: "#8fb3ae",
+  poi: "#c9aa6e",
+  draft: "#d7dae0",
+  calibration: "#6e8cff",
+  draftWallAccepted: "#d6a84f",
+  draftWallRejected: "#565c66",
+  draftSpaceAcceptedFill: "rgba(214, 168, 79, 0.14)",
+  draftSpaceAcceptedStroke: "#d6a84f",
+  draftSpaceRejectedFill: "rgba(86, 92, 102, 0.12)",
+  draftSpaceRejectedStroke: "#565c66",
+  draftSelected: "#6e8cff",
+  wall: "#b8bdc7",
+  wallSelected: "#6e8cff",
+  vertexHandle: "#b8bdc7",
+  vertexHandleSelected: "#6e8cff",
+  navigationNode: "#9298a3",
+  navigationNodePending: "#6e8cff",
+  navigationEdge: "#565c66",
+  route: "#5ec2c2",
 };
 
 /** Pure render function: reads editor/core state, never mutates it. */
@@ -129,11 +138,24 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
 
     if (state.layerVisibility.entrances) {
       for (const entrance of state.floor.entrances) {
-        const wall = state.floor.walls.filter(w => !entrance.wallId || w.id === entrance.wallId)
-          .map(w => ({ wall: w, distance: distanceToSegment(entrance.position, w.start, w.end).distance }))
-          .filter(hit => hit.distance < hit.wall.thickness / 2 + 0.2).sort((a,b) => a.distance - b.distance)[0]?.wall;
-        const rotation = wall && ['door','window','opening'].includes(entrance.type) ? Math.atan2(wall.end.y-wall.start.y,wall.end.x-wall.start.x)*180/Math.PI : entrance.rotation;
-        drawElement(ctx, state.camera, { ...entrance, ...(rotation !== undefined ? { rotation } : {}) }, state.selection.some(s => s.id === entrance.id) ? COLORS.wallSelected : COLORS.entrance);
+        const wall = state.floor.walls
+          .filter((w) => !entrance.wallId || w.id === entrance.wallId)
+          .map((w) => ({
+            wall: w,
+            distance: distanceToSegment(entrance.position, w.start, w.end).distance,
+          }))
+          .filter((hit) => hit.distance < hit.wall.thickness / 2 + 0.2)
+          .sort((a, b) => a.distance - b.distance)[0]?.wall;
+        const rotation =
+          wall && ["door", "window", "opening"].includes(entrance.type)
+            ? (Math.atan2(wall.end.y - wall.start.y, wall.end.x - wall.start.x) * 180) / Math.PI
+            : entrance.rotation;
+        drawElement(
+          ctx,
+          state.camera,
+          { ...entrance, ...(rotation !== undefined ? { rotation } : {}) },
+          state.selection.some((s) => s.id === entrance.id) ? COLORS.wallSelected : COLORS.entrance,
+        );
       }
     }
 
@@ -178,28 +200,44 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       true,
     );
     if (space.id === state.selectedDraftId) {
-      for (const point of space.polygon) drawVertexHandle(ctx, state.camera, point, '#7dd3fc');
+      for (const point of space.polygon)
+        drawVertexHandle(ctx, state.camera, point, COLORS.draftSelected);
     }
   }
   for (const wall of state.draftWalls) {
-    const replaced = state.draftElements?.some(element => element.accepted && element.replacesWallIds.includes(wall.id));
+    const replaced = state.draftElements?.some(
+      (element) => element.accepted && element.replacesWallIds.includes(wall.id),
+    );
     drawLine(
       ctx,
       state.camera,
       wall.start,
       wall.end,
-      wall.id === state.selectedDraftId ? '#7dd3fc' : wall.accepted && !replaced ? COLORS.draftWallAccepted : COLORS.draftWallRejected,
+      wall.id === state.selectedDraftId
+        ? COLORS.draftSelected
+        : wall.accepted && !replaced
+          ? COLORS.draftWallAccepted
+          : COLORS.draftWallRejected,
       Math.max(3, wall.thickness * 20),
       true,
     );
     if (wall.id === state.selectedDraftId) {
-      drawVertexHandle(ctx, state.camera, wall.start, '#7dd3fc');
-      drawVertexHandle(ctx, state.camera, wall.end, '#7dd3fc');
+      drawVertexHandle(ctx, state.camera, wall.start, COLORS.draftSelected);
+      drawVertexHandle(ctx, state.camera, wall.end, COLORS.draftSelected);
     }
   }
 
   for (const element of state.draftElements ?? []) {
-    drawElement(ctx, state.camera, element, element.id === state.selectedDraftId ? '#7dd3fc' : element.accepted ? '#ff9f3c' : '#bd94e8');
+    drawElement(
+      ctx,
+      state.camera,
+      element,
+      element.id === state.selectedDraftId
+        ? COLORS.draftSelected
+        : element.accepted
+          ? COLORS.draftWallAccepted
+          : COLORS.draftWallRejected,
+    );
   }
 
   if (state.draftPoints.length > 0) {
@@ -214,24 +252,57 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
   }
 }
 
-function drawElement(ctx: CanvasRenderingContext2D, camera: EditorCamera,
-  element: Pick<Entrance, 'position' | 'type' | 'rotation' | 'width' | 'depth' | 'stepCount'>, color: string): void {
-  const angle = (element.rotation ?? 0) * Math.PI / 180, ux = Math.cos(angle), uy = Math.sin(angle);
-  const point = (x: number, y: number) => ({ x: element.position.x + ux*x - uy*y, y: element.position.y + uy*x + ux*y });
-  const width = element.width ?? (element.type === 'door' ? 0.9 : 1.2);
-  if (element.type === 'stairs' || element.type === 'escalator') {
-    const depth = element.depth ?? 4, count = Math.min(40, Math.max(2, element.stepCount ?? 12));
-    drawPolygon(ctx, camera, [point(-depth/2,-width/2),point(depth/2,-width/2),point(depth/2,width/2),point(-depth/2,width/2)], 'transparent', color, true);
-    for (let i=1;i<count;i++) drawLine(ctx,camera,point(-depth/2+depth*i/count,-width/2),point(-depth/2+depth*i/count,width/2),color,1);
-    drawLine(ctx,camera,point(-depth/3,0),point(depth/3,0),color,2);
-    drawLine(ctx,camera,point(depth/3,0),point(depth/3-0.2,0.15),color,2);
-    drawLine(ctx,camera,point(depth/3,0),point(depth/3-0.2,-0.15),color,2);
+function drawElement(
+  ctx: CanvasRenderingContext2D,
+  camera: EditorCamera,
+  element: Pick<Entrance, "position" | "type" | "rotation" | "width" | "depth" | "stepCount">,
+  color: string,
+): void {
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180,
+    ux = Math.cos(angle),
+    uy = Math.sin(angle);
+  const point = (x: number, y: number) => ({
+    x: element.position.x + ux * x - uy * y,
+    y: element.position.y + uy * x + ux * y,
+  });
+  const width = element.width ?? (element.type === "door" ? 0.9 : 1.2);
+  if (element.type === "stairs" || element.type === "escalator") {
+    const depth = element.depth ?? 4,
+      count = Math.min(40, Math.max(2, element.stepCount ?? 12));
+    drawPolygon(
+      ctx,
+      camera,
+      [
+        point(-depth / 2, -width / 2),
+        point(depth / 2, -width / 2),
+        point(depth / 2, width / 2),
+        point(-depth / 2, width / 2),
+      ],
+      "transparent",
+      color,
+      true,
+    );
+    for (let i = 1; i < count; i++)
+      drawLine(
+        ctx,
+        camera,
+        point(-depth / 2 + (depth * i) / count, -width / 2),
+        point(-depth / 2 + (depth * i) / count, width / 2),
+        color,
+        1,
+      );
+    drawLine(ctx, camera, point(-depth / 3, 0), point(depth / 3, 0), color, 2);
+    drawLine(ctx, camera, point(depth / 3, 0), point(depth / 3 - 0.2, 0.15), color, 2);
+    drawLine(ctx, camera, point(depth / 3, 0), point(depth / 3 - 0.2, -0.15), color, 2);
   } else {
-    drawLine(ctx,camera,point(-width/2,0),point(width/2,0),color,3);
-    if (element.type === 'window') for (const offset of [-0.08,0.08]) drawLine(ctx,camera,point(-width/2,offset),point(width/2,offset),color,1);
-    if (element.type === 'door') drawLine(ctx,camera,point(-width/2,0),point(-width/2,width),color,2);
+    drawLine(ctx, camera, point(-width / 2, 0), point(width / 2, 0), color, 3);
+    if (element.type === "window")
+      for (const offset of [-0.08, 0.08])
+        drawLine(ctx, camera, point(-width / 2, offset), point(width / 2, offset), color, 1);
+    if (element.type === "door")
+      drawLine(ctx, camera, point(-width / 2, 0), point(-width / 2, width), color, 2);
   }
-  drawDot(ctx,camera,element.position,color,4);
+  drawDot(ctx, camera, element.position, color, 4);
 }
 
 function drawReference(
@@ -252,16 +323,16 @@ function drawReference(
 
   ctx.save();
   ctx.globalAlpha = reference.opacity;
-  ctx.drawImage(
-    image,
-    topLeft.x,
-    topLeft.y,
-    bottomRight.x - topLeft.x,
-    bottomRight.y - topLeft.y,
-  );
+  ctx.drawImage(image, topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
   ctx.restore();
 }
 
+const MINOR_GRID_METERS = 1;
+const MAJOR_GRID_METERS = 5;
+/** Below this on-screen spacing (px) the 1m lines would just be visual noise, so only the 5m lines are drawn. */
+const MIN_MINOR_SPACING_PX = 10;
+
+/** Two-tier grid: faint 1m lines plus a slightly stronger line every 5m, matching how CAD tools separate minor/major divisions without either competing with the drawing itself. */
 function drawGrid(
   ctx: CanvasRenderingContext2D,
   camera: EditorCamera,
@@ -270,27 +341,30 @@ function drawGrid(
 ): void {
   const topLeft = camera.screenToWorld({ x: 0, y: 0 });
   const bottomRight = camera.screenToWorld({ x: width, y: height });
-  const step = 1;
+  const pixelsPerMeter = camera.getState().zoom;
+  const showMinor = pixelsPerMeter * MINOR_GRID_METERS >= MIN_MINOR_SPACING_PX;
 
-  ctx.strokeStyle = COLORS.grid;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
+  const drawLines = (step: number, color: string) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const startX = Math.floor(topLeft.x / step) * step;
+    for (let x = startX; x <= bottomRight.x; x += step) {
+      const screen = camera.worldToScreen({ x, y: 0 });
+      ctx.moveTo(screen.x, 0);
+      ctx.lineTo(screen.x, height);
+    }
+    const startY = Math.floor(bottomRight.y / step) * step;
+    for (let y = startY; y <= topLeft.y; y += step) {
+      const screen = camera.worldToScreen({ x: 0, y });
+      ctx.moveTo(0, screen.y);
+      ctx.lineTo(width, screen.y);
+    }
+    ctx.stroke();
+  };
 
-  const startX = Math.floor(topLeft.x / step) * step;
-  for (let x = startX; x <= bottomRight.x; x += step) {
-    const screen = camera.worldToScreen({ x, y: 0 });
-    ctx.moveTo(screen.x, 0);
-    ctx.lineTo(screen.x, height);
-  }
-
-  const startY = Math.floor(bottomRight.y / step) * step;
-  for (let y = startY; y <= topLeft.y; y += step) {
-    const screen = camera.worldToScreen({ x: 0, y });
-    ctx.moveTo(0, screen.y);
-    ctx.lineTo(width, screen.y);
-  }
-
-  ctx.stroke();
+  if (showMinor) drawLines(MINOR_GRID_METERS, COLORS.gridMinor);
+  drawLines(MAJOR_GRID_METERS, COLORS.gridMajor);
 }
 
 function drawPolygon(
@@ -394,7 +468,7 @@ function drawVertexHandle(
   const screen = camera.worldToScreen(worldPoint);
   const size = 6;
   ctx.fillStyle = color;
-  ctx.strokeStyle = "#1e1e22";
+  ctx.strokeStyle = COLORS.background;
   ctx.lineWidth = 1;
   ctx.fillRect(screen.x - size / 2, screen.y - size / 2, size, size);
   ctx.strokeRect(screen.x - size / 2, screen.y - size / 2, size, size);

@@ -17,6 +17,7 @@ import {
   DeleteNavigationEdgeCommand,
 } from "./commands/NavigationCommands.js";
 import { CompoundCommand } from "./commands/CompoundCommand.js";
+import { ClearFloorCommand } from "./commands/ClearFloorCommand.js";
 import { DraftReviewTool } from "./tools/DraftReviewTool.js";
 import { EditorCamera } from "./camera/EditorCamera.js";
 import { DraftManager } from "./draft/DraftManager.js";
@@ -396,6 +397,47 @@ export class IndoorEditor {
     }
 
     if (commands.length) this.executeCommand(new CompoundCommand("Link Floor Node", commands));
+  }
+
+  /**
+   * Empties every space/wall/entrance/POI/navigation node/edge on a floor
+   * (the active floor by default) in one undoable step. Also drops any
+   * cross-floor navigation edge (see linkFloorNode) stored on *another*
+   * floor that links to a node being removed here — that other floor isn't
+   * being cleared, so it would otherwise dangle.
+   */
+  clearFloor(floorId?: string): void {
+    const floor = floorId
+      ? this.project.buildings.flatMap((b) => b.floors).find((f) => f.id === floorId)
+      : this.getActiveFloor();
+    if (!floor) return;
+    const isEmpty =
+      !floor.spaces.length &&
+      !floor.walls.length &&
+      !floor.entrances.length &&
+      !floor.pois.length &&
+      !floor.navigation.nodes.length &&
+      !floor.navigation.edges.length;
+    if (isEmpty) return;
+
+    const commands: Command[] = [];
+    const building = this.project.buildings.find((b) => b.floors.includes(floor));
+    if (building) {
+      const nodeIds = new Set(floor.navigation.nodes.map((n) => n.id));
+      for (const otherFloor of building.floors) {
+        if (otherFloor.id === floor.id) continue;
+        for (const edge of otherFloor.navigation.edges) {
+          if (nodeIds.has(edge.from) || nodeIds.has(edge.to)) {
+            commands.push(new DeleteNavigationEdgeCommand(otherFloor, edge.id));
+          }
+        }
+      }
+    }
+    commands.push(new ClearFloorCommand(floor));
+
+    this.executeCommand(
+      commands.length > 1 ? new CompoundCommand("Clear Floor", commands) : commands[0]!,
+    );
   }
 
   /** Finds which building/floor a navigation node belongs to, optionally restricted to one building. */

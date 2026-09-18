@@ -1,5 +1,6 @@
 export type { Command } from "./Command.js";
 export { CompoundCommand } from "./CompoundCommand.js";
+export { ClearFloorCommand } from "./ClearFloorCommand.js";
 export { AddSpaceCommand, DeleteSpaceCommand } from "./SpaceCommands.js";
 export { MoveVertexCommand, AddVertexCommand, DeleteVertexCommand } from "./VertexCommands.js";
 export { ChangePropertyCommand } from "./PropertyCommands.js";

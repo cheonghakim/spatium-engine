@@ -13,14 +13,33 @@ import {
 } from "@indoor/core";
 import { IndoorEditor } from "@indoor/editor";
 import {
+  mdiArrowCollapseLeft,
+  mdiArrowCollapseRight,
+  mdiArrowExpandLeft,
+  mdiArrowExpandRight,
   mdiAutoFix,
+  mdiCropFree,
+  mdiCubeOutline,
   mdiCursorDefault,
-  mdiShapePolygonPlus,
-  mdiWall,
+  mdiDeleteSweepOutline,
   mdiDoor,
+  mdiFilePlusOutline,
+  mdiFolderOpenOutline,
+  mdiGrid,
+  mdiImageOutline,
+  mdiMagnetOn,
+  mdiMagnifyMinusOutline,
+  mdiMagnifyPlusOutline,
   mdiMapMarker,
+  mdiMenuDown,
+  mdiRedo,
   mdiRoutes,
   mdiRulerSquareCompass,
+  mdiShapePolygonPlus,
+  mdiTrayArrowDown,
+  mdiTuneVariant,
+  mdiUndo,
+  mdiWall,
 } from "@mdi/js";
 import MdiIcon from "./components/MdiIcon.vue";
 import StudioCanvas from "./components/StudioCanvas.vue";
@@ -64,6 +83,7 @@ const canvas = ref<InstanceType<typeof StudioCanvas> | null>(null);
 const referencePanel = ref<InstanceType<typeof ReferencePanel> | null>(null);
 function openReferenceUpload(): void {
   panel.value = "reference";
+  rightCollapsed.value = false;
   referencePanel.value?.triggerUpload();
 }
 const restoredNotice = ref(restoredProject !== null);
@@ -188,6 +208,7 @@ function dismissRestoredNotice(): void {
   restoredNotice.value = false;
 }
 
+const lastSavedAt = ref<number | null>(null);
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleAutosave(): void {
   if (autosaveTimer !== null) clearTimeout(autosaveTimer);
@@ -195,6 +216,7 @@ function scheduleAutosave(): void {
     autosaveTimer = null;
     try {
       window.localStorage.setItem(AUTOSAVE_KEY, serializeProject(editor.project));
+      lastSavedAt.value = Date.now();
     } catch {
       // localStorage unavailable (private mode, quota exceeded, etc.) — autosave is best-effort.
     }
@@ -223,7 +245,10 @@ onMounted(() => {
   unsubscribers = [
     editor.on("toolChanged", (toolId) => {
       ui.activeToolId = toolId;
-      if (toolId === "draft-review") panel.value = "review";
+      if (toolId === "draft-review") {
+        panel.value = "review";
+        rightCollapsed.value = false;
+      }
       syncHistoryState();
     }),
     editor.on("projectChanged", syncHistoryState),
@@ -241,16 +266,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onShortcut);
   for (const unsubscribe of unsubscribers) unsubscribe();
   if (autosaveTimer !== null) clearTimeout(autosaveTimer);
+  stopResize();
 });
 
 const tools = [
-  {
-    id: "draft-review",
-    label: "감지 결과 수정",
-    icon: mdiAutoFix,
-    key: "B",
-    hint: "벽 클릭·드래그: 이동 · 끝점 드래그: 길이 수정 · Delete: 제외 · Shift: 수평/수직 · Alt: 붙이기 해제",
-  },
   {
     id: "select",
     label: "선택",
@@ -300,13 +319,37 @@ const tools = [
     key: "C",
     hint: "도면의 두 점을 클릭한 후 실제 거리(m)를 입력하세요.",
   },
+  {
+    id: "draft-review",
+    label: "감지 결과 수정",
+    icon: mdiAutoFix,
+    key: "B",
+    hint: "벽 클릭·드래그: 이동 · 끝점 드래그: 길이 수정 · Delete: 제외 · Shift: 수평/수직 · Alt: 붙이기 해제",
+  },
 ];
+type Tool = (typeof tools)[number];
+/** Purely a left-rail grouping label — doesn't affect tool ids, commands or shortcuts. */
+const TOOL_GROUPS: Array<{ label: string; ids: string[] }> = [
+  { label: "선택 및 탐색", ids: ["select"] },
+  { label: "도형 작성", ids: ["polygon", "wall"] },
+  { label: "출입구", ids: ["door"] },
+  { label: "POI 및 객체", ids: ["poi"] },
+  { label: "내비게이션", ids: ["navigation"] },
+  { label: "측정 및 보정", ids: ["calibrate"] },
+  { label: "자동 감지", ids: ["draft-review"] },
+];
+const groupedTools = computed(() =>
+  TOOL_GROUPS.map((group) => ({
+    label: group.label,
+    items: group.ids.map((id) => tools.find((t) => t.id === id)).filter((t): t is Tool => !!t),
+  })),
+);
 const activeTool = computed(() => tools.find((t) => t.id === ui.activeToolId)!);
-function toolTitle(tool: (typeof tools)[number]): string {
+function toolTitle(tool: Tool): string {
   if (tool.id === "calibrate" && !hasReference.value) return "도면을 먼저 업로드하세요";
   if (tool.id === "draft-review" && !editor.draft.hasDraft)
     return "도면을 업로드하고 자동 벡터화를 실행하면 결과를 검토할 수 있습니다";
-  return `${tool.label}\n${tool.hint}`;
+  return `${tool.label} (${tool.key})\n${tool.hint}`;
 }
 const hasReference = computed(() => {
   revision.value;
@@ -323,6 +366,19 @@ const empty = computed(() => {
     !f.pois.length &&
     !f.navigation.nodes.length &&
     !hasReference.value
+  );
+});
+const floorEmpty = computed(() => {
+  revision.value;
+  const f = editor.getActiveFloor();
+  return (
+    !f ||
+    (!f.spaces.length &&
+      !f.walls.length &&
+      !f.entrances.length &&
+      !f.pois.length &&
+      !f.navigation.nodes.length &&
+      !f.navigation.edges.length)
   );
 });
 function onShortcut(event: KeyboardEvent): void {
@@ -359,6 +415,16 @@ function redo(): void {
   editor.redo();
 }
 
+function clearFloor(): void {
+  if (
+    !window.confirm(
+      "현재 층의 모든 요소(공간, 벽, 출입구, POI, 내비게이션)가 삭제됩니다. 계속할까요?",
+    )
+  )
+    return;
+  editor.clearFloor();
+}
+
 function downloadFile(filename: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -384,144 +450,352 @@ function exportGeoJson(): void {
     "application/geo+json",
   );
 }
+
+// ---- Side panel layout: resizable width + collapse-to-rail, persisted locally ----
+const LEFT_MIN = 168;
+const LEFT_MAX = 360;
+const LEFT_ICON_ONLY_BELOW = 188;
+const RIGHT_MIN = 260;
+const RIGHT_MAX = 420;
+const RAIL_WIDTH = 48;
+
+function loadNumber(key: string, fallback: number): number {
+  const raw = window.localStorage.getItem(key);
+  const value = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(value) ? value : fallback;
+}
+function loadFlag(key: string, fallback: boolean): boolean {
+  const raw = window.localStorage.getItem(key);
+  return raw === null ? fallback : raw === "1";
+}
+function persist(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // best-effort only
+  }
+}
+
+const leftWidth = ref(loadNumber("spatium-studio:leftWidth", 230));
+const rightWidth = ref(loadNumber("spatium-studio:rightWidth", 300));
+const leftCollapsed = ref(loadFlag("spatium-studio:leftCollapsed", false));
+const rightCollapsed = ref(loadFlag("spatium-studio:rightCollapsed", false));
+const leftIconOnly = computed(() => leftCollapsed.value || leftWidth.value < LEFT_ICON_ONLY_BELOW);
+
+function toggleLeftPanel(): void {
+  leftCollapsed.value = !leftCollapsed.value;
+  persist("spatium-studio:leftCollapsed", leftCollapsed.value ? "1" : "0");
+}
+function toggleRightPanel(): void {
+  rightCollapsed.value = !rightCollapsed.value;
+  persist("spatium-studio:rightCollapsed", rightCollapsed.value ? "1" : "0");
+}
+
+let resizing: "left" | "right" | null = null;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+function startResize(side: "left" | "right", evt: PointerEvent): void {
+  resizing = side;
+  resizeStartX = evt.clientX;
+  resizeStartWidth = side === "left" ? leftWidth.value : rightWidth.value;
+  window.addEventListener("pointermove", onResizeMove);
+  window.addEventListener("pointerup", stopResize);
+}
+function onResizeMove(evt: PointerEvent): void {
+  if (!resizing) return;
+  const delta = evt.clientX - resizeStartX;
+  if (resizing === "left") {
+    leftWidth.value = Math.min(LEFT_MAX, Math.max(LEFT_MIN, resizeStartWidth + delta));
+  } else {
+    rightWidth.value = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, resizeStartWidth - delta));
+  }
+}
+function stopResize(): void {
+  if (!resizing) return;
+  resizing = null;
+  window.removeEventListener("pointermove", onResizeMove);
+  window.removeEventListener("pointerup", stopResize);
+  persist("spatium-studio:leftWidth", String(leftWidth.value));
+  persist("spatium-studio:rightWidth", String(rightWidth.value));
+}
+
+const PANEL_TABS = [
+  { id: "properties", label: "속성", icon: mdiTuneVariant },
+  { id: "reference", label: "도면", icon: mdiImageOutline },
+  { id: "route", label: "경로", icon: mdiRoutes },
+  { id: "review", label: "검토", icon: mdiAutoFix },
+];
+function selectRightTab(id: string): void {
+  panel.value = id;
+  if (rightCollapsed.value) toggleRightPanel();
+}
 </script>
 
 <template>
   <div class="studio">
     <header class="topbar">
-      <span class="brand">S <strong>SPATIUM</strong></span>
-      <span class="project-name">{{ currentProject.name }}</span>
+      <div class="topbar-zone zone-project">
+        <span class="brand">S <strong>SPATIUM</strong></span>
+        <span class="project-name">{{ currentProject.name }}</span>
+        <BuildingSwitcher
+          :editor="editor"
+          :project="currentProject"
+          :active-building-id="activeBuildingId"
+          @select="onSelectBuilding"
+        />
+        <FloorSwitcher v-if="activeBuilding" :editor="editor" :building="activeBuilding" />
+      </div>
+
+      <div class="topbar-divider" />
+
+      <div class="topbar-zone zone-edit">
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!ui.canUndo"
+          title="실행 취소 (Ctrl/⌘ Z)"
+          aria-label="실행 취소"
+          @click="undo"
+        >
+          <MdiIcon :path="mdiUndo" :size="17" />
+        </button>
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!ui.canRedo"
+          title="다시 실행 (Ctrl/⌘ Shift Z)"
+          aria-label="다시 실행"
+          @click="redo"
+        >
+          <MdiIcon :path="mdiRedo" :size="17" />
+        </button>
+        <button
+          class="btn-ghost btn-icon danger-ghost"
+          :disabled="floorEmpty"
+          title="현재 층의 모든 요소를 지웁니다"
+          aria-label="현재 층 전체 지우기"
+          @click="clearFloor"
+        >
+          <MdiIcon :path="mdiDeleteSweepOutline" :size="16" />
+        </button>
+      </div>
+
       <span v-if="restoredNotice" class="restored-badge" role="status">
         이전 작업이 복원되었습니다
         <button class="dismiss" type="button" aria-label="알림 닫기" @click="dismissRestoredNotice">
           ×
         </button>
       </span>
-      <BuildingSwitcher
-        :editor="editor"
-        :project="currentProject"
-        :active-building-id="activeBuildingId"
-        @select="onSelectBuilding"
-      />
-      <FloorSwitcher v-if="activeBuilding" :editor="editor" :building="activeBuilding" />
-      <div class="spacer" />
-      <button class="compact" :disabled="!ui.canUndo" title="Ctrl/⌘ Z" @click="undo">
-        ↶ 실행 취소
-      </button>
-      <button class="compact" :disabled="!ui.canRedo" title="Ctrl/⌘ Shift Z" @click="redo">
-        ↷ 다시 실행
-      </button>
-      <button class="compact" :class="{ active: show3d }" @click="toggle3d">
-        {{ show3d ? "2D 편집으로" : "3D 미리보기" }}
-      </button>
-      <button class="compact" @click="newProject">새 프로젝트</button>
-      <label class="compact upload-button">
-        불러오기
-        <input type="file" accept=".json,application/json" @change="onOpenFile" />
-      </label>
-      <details class="export-menu">
-        <summary class="compact">내보내기 ↓</summary>
-        <div>
-          <button @click="exportJson">프로젝트 JSON</button
-          ><button @click="exportGeoJson">지도 GeoJSON</button>
-        </div>
-      </details>
       <span v-if="openError" class="error-text" role="alert">{{ openError }}</span>
+
+      <div class="spacer" />
+
+      <div class="topbar-divider" />
+
+      <div class="topbar-zone zone-view">
+        <button class="secondary" :aria-pressed="show3d" @click="toggle3d">
+          <MdiIcon :path="mdiCubeOutline" :size="15" />
+          {{ show3d ? "2D 편집으로" : "3D 미리보기" }}
+        </button>
+        <button class="secondary" title="새 프로젝트를 시작합니다" @click="newProject">
+          <MdiIcon :path="mdiFilePlusOutline" :size="15" />
+          새 프로젝트
+        </button>
+        <label class="secondary upload-button">
+          <MdiIcon :path="mdiFolderOpenOutline" :size="15" />
+          불러오기
+          <input type="file" accept=".json,application/json" @change="onOpenFile" />
+        </label>
+        <details class="export-menu">
+          <summary class="btn-primary">
+            <MdiIcon :path="mdiTrayArrowDown" :size="15" />
+            내보내기
+            <MdiIcon :path="mdiMenuDown" :size="14" />
+          </summary>
+          <div>
+            <button @click="exportJson">프로젝트 JSON</button>
+            <button @click="exportGeoJson">지도 GeoJSON</button>
+          </div>
+        </details>
+      </div>
     </header>
 
     <div class="body">
-      <aside class="sidebar left">
-        <section>
-          <h3>편집 도구</h3>
-          <div class="tools">
-            <button
-              v-for="tool in tools"
-              :key="tool.id"
-              class="tool"
-              :class="{ active: ui.activeToolId === tool.id }"
-              :aria-pressed="ui.activeToolId === tool.id"
-              :aria-label="tool.label"
-              :disabled="
-                (tool.id === 'calibrate' && !hasReference) ||
-                (tool.id === 'draft-review' && !editor.draft.hasDraft)
-              "
-              :title="toolTitle(tool)"
-              @click="selectTool(tool.id)"
-            >
-              <MdiIcon :path="tool.icon" :size="20" />
-              <kbd>{{ tool.key }}</kbd>
-            </button>
-          </div>
-        </section>
+      <aside
+        class="sidebar left"
+        :class="{ collapsed: leftCollapsed }"
+        :style="{ width: (leftCollapsed ? RAIL_WIDTH : leftWidth) + 'px' }"
+      >
+        <div class="sidebar-header">
+          <h3 v-if="!leftCollapsed" class="panel-heading">도구</h3>
+          <button
+            class="btn-ghost btn-icon collapse-toggle"
+            :title="leftCollapsed ? '도구 패널 펼치기' : '도구 패널 접기'"
+            :aria-label="leftCollapsed ? '도구 패널 펼치기' : '도구 패널 접기'"
+            @click="toggleLeftPanel"
+          >
+            <MdiIcon
+              :path="leftCollapsed ? mdiArrowExpandRight : mdiArrowCollapseLeft"
+              :size="15"
+            />
+          </button>
+        </div>
 
-        <section>
+        <div class="tool-groups" :class="{ 'icon-only': leftIconOnly }">
+          <div v-for="group in groupedTools" :key="group.label" class="tool-group">
+            <h4 v-if="!leftIconOnly" class="tool-group-label">
+              {{ group.label }}
+            </h4>
+            <div class="tool-group-items">
+              <button
+                v-for="tool in group.items"
+                :key="tool.id"
+                class="tool"
+                :class="{ active: ui.activeToolId === tool.id }"
+                :aria-pressed="ui.activeToolId === tool.id"
+                :aria-label="tool.label"
+                :disabled="
+                  (tool.id === 'calibrate' && !hasReference) ||
+                  (tool.id === 'draft-review' && !editor.draft.hasDraft)
+                "
+                :title="toolTitle(tool)"
+                @click="selectTool(tool.id)"
+              >
+                <MdiIcon :path="tool.icon" :size="17" class="tool-icon" />
+                <span v-if="!leftIconOnly" class="tool-label">{{ tool.label }}</span>
+                <kbd v-if="!leftIconOnly">{{ tool.key }}</kbd>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <section v-if="!leftCollapsed" class="layers-section">
           <LayersPanel :editor="editor" />
         </section>
       </aside>
 
+      <div
+        v-if="!leftCollapsed"
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="도구 패널 크기 조절"
+        @pointerdown="startResize('left', $event)"
+      />
+
       <main class="canvas-area">
-        <div class="canvas-heading">
-          <strong>{{ show3d ? "3D 미리보기" : activeTool.label }}</strong>
-          <p>{{ show3d ? "2D 편집으로 돌아가 지도를 수정할 수 있습니다." : activeTool.hint }}</p>
-        </div>
         <div class="viewport">
           <StudioCanvas v-if="!show3d" ref="canvas" :editor="editor" />
           <Preview3D v-else :editor="editor" />
+
+          <div v-if="!show3d" class="tool-hud">
+            <strong>{{ activeTool.label }}</strong>
+            <p>{{ activeTool.hint }}</p>
+          </div>
+
           <div v-if="empty && !show3d && ui.activeToolId === 'select'" class="welcome">
             <span class="hint">시작하기</span>
             <h1>첫 공간을 그려보세요</h1>
             <p>도면을 불러와 따라 그리거나,<br />공간 도구로 지도를 직접 만들 수 있습니다.</p>
             <div>
-              <button class="active" @click="selectTool('polygon')">＋ 공간 그리기</button
-              ><button @click="openReferenceUpload">도면 불러오기</button>
+              <button class="btn-primary" @click="selectTool('polygon')">＋ 공간 그리기</button
+              ><button class="secondary" @click="openReferenceUpload">도면 불러오기</button>
             </div>
             <small>도면 → 공간과 벽 → 경로 연결 → 내보내기</small>
           </div>
-          <div v-if="!show3d" class="zoom-controls">
-            <button :aria-pressed="canvas?.showGrid" @click="canvas?.toggleGrid()">격자</button
-            ><button
-              title="격자에 맞춰 정렬합니다"
+
+          <div v-if="!show3d" class="zoom-hud">
+            <button
+              class="btn-ghost btn-icon"
+              :aria-pressed="canvas?.showGrid"
+              title="격자 표시"
+              aria-label="격자 표시 전환"
+              @click="canvas?.toggleGrid()"
+            >
+              <MdiIcon :path="mdiGrid" :size="15" />
+            </button>
+            <button
+              class="btn-ghost btn-icon"
               :class="{ active: gridSnapEnabled }"
               :aria-pressed="gridSnapEnabled"
+              title="격자에 맞춰 정렬 (1m 간격)"
+              aria-label="격자 맞춤 전환"
               @click="toggleGridSnap"
             >
-              격자 맞춤</button
-            ><button aria-label="축소" @click="canvas?.zoomBy(1 / 1.2)">−</button
-            ><button @click="canvas?.resetView()">화면 초기화</button
-            ><button aria-label="확대" @click="canvas?.zoomBy(1.2)">＋</button>
+              <MdiIcon :path="mdiMagnetOn" :size="15" />
+            </button>
+            <span class="hud-divider" />
+            <button class="btn-ghost btn-icon" aria-label="축소" @click="canvas?.zoomBy(1 / 1.2)">
+              <MdiIcon :path="mdiMagnifyMinusOutline" :size="15" />
+            </button>
+            <span class="zoom-readout">{{ canvas?.zoomPercent ?? 100 }}%</span>
+            <button class="btn-ghost btn-icon" aria-label="확대" @click="canvas?.zoomBy(1.2)">
+              <MdiIcon :path="mdiMagnifyPlusOutline" :size="15" />
+            </button>
+            <button
+              class="btn-ghost btn-icon"
+              title="화면 초기화"
+              aria-label="화면 초기화"
+              @click="canvas?.resetView()"
+            >
+              <MdiIcon :path="mdiCropFree" :size="15" />
+            </button>
           </div>
         </div>
       </main>
 
-      <aside class="sidebar right">
-        <nav class="panel-tabs" aria-label="작업 패널">
+      <div
+        v-if="!rightCollapsed"
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="속성 패널 크기 조절"
+        @pointerdown="startResize('right', $event)"
+      />
+
+      <aside
+        class="sidebar right"
+        :class="{ collapsed: rightCollapsed }"
+        :style="{ width: (rightCollapsed ? RAIL_WIDTH : rightWidth) + 'px' }"
+      >
+        <nav class="panel-tabs" :class="{ 'icon-only': rightCollapsed }" aria-label="작업 패널">
           <button
-            v-for="tab in [
-              { id: 'properties', label: '속성' },
-              { id: 'reference', label: '도면' },
-              { id: 'route', label: '경로' },
-              { id: 'review', label: '검토' },
-            ]"
+            v-for="tab in PANEL_TABS"
             :key="tab.id"
-            :class="{ active: panel === tab.id }"
-            :aria-pressed="panel === tab.id"
-            @click="panel = tab.id"
+            class="tab"
+            :class="{ active: panel === tab.id && !rightCollapsed }"
+            :aria-pressed="panel === tab.id && !rightCollapsed"
+            :title="tab.label"
+            @click="selectRightTab(tab.id)"
           >
-            {{ tab.label }}
+            <MdiIcon :path="tab.icon" :size="15" />
+            <span v-if="!rightCollapsed">{{ tab.label }}</span>
+          </button>
+          <button
+            class="btn-ghost btn-icon collapse-toggle"
+            :title="rightCollapsed ? '속성 패널 펼치기' : '속성 패널 접기'"
+            :aria-label="rightCollapsed ? '속성 패널 펼치기' : '속성 패널 접기'"
+            @click="toggleRightPanel"
+          >
+            <MdiIcon
+              :path="rightCollapsed ? mdiArrowExpandLeft : mdiArrowCollapseRight"
+              :size="15"
+            />
           </button>
         </nav>
-        <section v-show="panel === 'properties'">
-          <PropertyPanel :editor="editor" />
-        </section>
-        <section v-show="panel === 'route'">
-          <RoutePanel :editor="editor" />
-        </section>
-        <section v-show="panel === 'reference'">
-          <ReferencePanel ref="referencePanel" :editor="editor" />
-        </section>
-        <section v-show="panel === 'review'">
-          <VectorizePanel :editor="editor" />
-        </section>
+        <template v-if="!rightCollapsed">
+          <section v-show="panel === 'properties'" class="panel-body">
+            <PropertyPanel :editor="editor" :last-saved-at="lastSavedAt" />
+          </section>
+          <section v-show="panel === 'route'" class="panel-body">
+            <RoutePanel :editor="editor" />
+          </section>
+          <section v-show="panel === 'reference'" class="panel-body">
+            <ReferencePanel ref="referencePanel" :editor="editor" />
+          </section>
+          <section v-show="panel === 'review'" class="panel-body">
+            <VectorizePanel :editor="editor" />
+          </section>
+        </template>
       </aside>
     </div>
 
@@ -539,80 +813,79 @@ function exportGeoJson(): void {
   min-height: 480px;
   background: var(--bg-app);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--font-size-body);
 }
 .topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 20px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
   background: var(--surface-1);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-zone {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.topbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 0;
+  background: var(--border-subtle);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: var(--accent);
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 800;
 }
 .brand strong {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 1.5px;
 }
 .project-name {
   color: var(--text-tertiary);
-  font-size: 12px;
-  margin-left: 12px;
+  font-size: var(--font-size-secondary);
+  padding-right: var(--space-2);
+  border-right: 1px solid var(--border-subtle);
+  margin-right: 2px;
 }
 .spacer {
   flex: 1;
 }
-.topbar button.compact,
-.topbar summary.compact,
-.topbar label.compact {
-  padding: 6px 10px;
-  font-size: 12px;
+.secondary {
+  background: var(--surface-2);
+}
+.danger-ghost:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
 }
 
-.topbar .upload-button {
+.zone-view .upload-button {
   position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: var(--surface-3);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
 }
-.topbar .upload-button:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-.topbar .upload-button input {
+.zone-view .upload-button input {
   position: absolute;
   inset: 0;
   opacity: 0;
   width: 100%;
   cursor: pointer;
 }
-.topbar .upload-button:focus-within {
+.zone-view .upload-button:focus-within {
   outline: 2px solid var(--accent-border);
   outline-offset: 2px;
 }
 
 .error-text {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--danger);
   line-height: 1.4;
   max-width: 220px;
@@ -622,10 +895,10 @@ function exportGeoJson(): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 3px 10px;
+  font-size: var(--font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.3px;
   color: var(--accent);
   background: var(--accent-soft);
   border-radius: 999px;
@@ -653,121 +926,164 @@ function exportGeoJson(): void {
 .export-menu {
   position: relative;
 }
-.export-menu summary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-contrast);
-}
-.export-menu summary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
 .export-menu > div {
   position: absolute;
   z-index: 20;
   right: 0;
-  top: 40px;
+  top: 36px;
   width: 190px;
-  padding: 8px;
+  padding: var(--space-2);
   display: grid;
-  gap: 6px;
-  background: var(--surface-2);
+  gap: 4px;
+  background: var(--surface-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
   animation: menu-in var(--dur) var(--ease-out);
 }
+.export-menu > div button {
+  width: 100%;
+  justify-content: flex-start;
+  background: transparent;
+  border-color: transparent;
+}
 
+/* ---- Sidebars ---- */
 .sidebar {
   flex-shrink: 0;
-  width: 220px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 14px 12px;
-  overflow-y: auto;
+  min-width: 0;
+  background: var(--surface-1);
+  overflow: hidden;
+  transition: width var(--dur) var(--ease-out);
 }
 .sidebar.left {
-  width: 190px;
-  background: var(--surface-1);
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border);
 }
 .sidebar.right {
-  width: 280px;
-  background: var(--surface-1);
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--border);
 }
-.sidebar h3 {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 var(--space-3);
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.left section + section {
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 0;
 }
 
-.tools {
+.resizer {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+}
+.resizer:hover,
+.resizer:active {
+  background: var(--accent-soft);
+}
+
+/* ---- Left: tool rail ---- */
+.tool-groups {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tool-group-label {
+  margin: 0 0 2px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-disabled);
+}
+.tool-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.tool-groups.icon-only .tool-group-items {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 5px;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 3px;
 }
 .tool {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  height: 32px;
   background: transparent;
   border-color: transparent;
-  padding: 10px 4px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
 }
 .tool:hover:not(:disabled):not(.active) {
   background: var(--surface-2);
-  border-color: var(--border);
+  color: var(--text-primary);
+}
+.tool.active {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--text-primary);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tool-icon {
+  flex-shrink: 0;
+}
+.tool-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-secondary);
 }
 .tool kbd {
-  position: absolute;
-  top: 3px;
-  right: 3px;
+  flex-shrink: 0;
 }
-kbd {
-  font: 600 9px var(--font-sans);
-  color: var(--text-tertiary);
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  width: 14px;
-  line-height: 14px;
-  text-align: center;
+.tool-groups.icon-only .tool {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
 }
-.tool.active kbd {
-  color: var(--accent-contrast);
-  background: rgba(255, 255, 255, 0.2);
-  border-color: transparent;
-}
-.hint {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  line-height: 1.6;
+.tool-groups.icon-only .tool.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
+.layers-section {
+  flex-shrink: 0;
+  max-height: 42%;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---- Canvas ---- */
 .canvas-area {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-.canvas-heading {
-  padding: 12px 18px;
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.canvas-heading p {
-  color: var(--text-tertiary);
-  font-size: 12px;
-  margin: 5px 0 0;
+  background: var(--canvas-bg);
 }
 .viewport {
   position: relative;
@@ -775,6 +1091,31 @@ kbd {
   min-height: 0;
   overflow: hidden;
 }
+.tool-hud {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  max-width: 320px;
+  padding: 8px 12px;
+  background: var(--overlay);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+.tool-hud strong {
+  display: block;
+  font-size: var(--font-size-secondary);
+  color: var(--text-primary);
+}
+.tool-hud p {
+  margin: 3px 0 0;
+  font-size: var(--font-size-caption);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
 .welcome {
   position: absolute;
   top: 50%;
@@ -782,7 +1123,7 @@ kbd {
   transform: translate(-50%, -50%);
   width: min(410px, 90%);
   padding: 32px 26px;
-  background: rgba(24, 24, 29, 0.92);
+  background: var(--overlay);
   backdrop-filter: blur(16px);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xl);
@@ -794,7 +1135,7 @@ kbd {
   display: inline-block;
   margin: 0;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: 600;
   letter-spacing: 0.4px;
   color: var(--accent);
@@ -802,7 +1143,7 @@ kbd {
   border-radius: 999px;
 }
 .welcome h1 {
-  font-size: 23px;
+  font-size: 22px;
   margin: 14px 0 8px;
 }
 .welcome p {
@@ -817,53 +1158,114 @@ kbd {
 }
 .welcome small {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
-.zoom-controls {
+
+.zoom-hud {
   position: absolute;
-  bottom: 18px;
-  right: 18px;
+  bottom: var(--space-4);
+  right: var(--space-4);
   display: flex;
-  gap: 4px;
-  padding: 5px;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
   background: var(--overlay);
   backdrop-filter: blur(10px);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
 }
-.zoom-controls button {
-  font-size: 12px;
+.hud-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border-strong);
+}
+.zoom-readout {
+  min-width: 42px;
+  text-align: center;
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
 
+/* ---- Right panel tabs ---- */
 .panel-tabs {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  height: 40px;
+  flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: 12px;
+  padding: 0 var(--space-1);
 }
-.panel-tabs button {
+.panel-tabs.icon-only {
+  flex-direction: column;
+  height: auto;
+  padding: var(--space-1) 0;
+  gap: 2px;
+}
+.tab {
   flex: 1;
-  padding: 7px 4px;
+  gap: 6px;
+  height: 32px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-secondary);
 }
-.sidebar :deep(.hint),
-.sidebar :deep(.empty-hint) {
+.tab:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-primary);
+}
+.tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+}
+.panel-tabs.icon-only .tab {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-bottom: 0;
+  border-radius: var(--radius-sm);
+}
+.panel-tabs.icon-only .tab.active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.panel-tabs .collapse-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.panel-tabs.icon-only .collapse-toggle {
+  margin-left: 0;
+  order: -1;
+  margin-bottom: 4px;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+}
+.panel-body :deep(.hint),
+.panel-body :deep(.empty-hint) {
   color: var(--text-tertiary);
   line-height: 1.7;
 }
-.sidebar :deep(input),
-.sidebar :deep(select) {
+.panel-body :deep(input),
+.panel-body :deep(select) {
   min-width: 0;
   max-width: 100%;
 }
 
 .statusbar {
-  max-height: 120px;
-  padding: 10px 16px;
-  background: var(--surface-1);
-  border-top: 1px solid var(--border-subtle);
-  overflow-y: auto;
   flex-shrink: 0;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
 }
 
 @keyframes welcome-in {
@@ -887,20 +1289,6 @@ kbd {
   }
 }
 
-@media (max-width: 1100px) {
-  .left {
-    width: 160px;
-  }
-  .right {
-    width: 235px;
-  }
-  .project-name {
-    display: none;
-  }
-  .topbar {
-    padding: 8px 12px;
-  }
-}
 @media (max-width: 760px) {
   .studio {
     height: auto;
@@ -909,24 +1297,20 @@ kbd {
   .body {
     flex-wrap: wrap;
   }
-  .left {
-    width: 132px;
-    padding: 12px 8px;
+  .resizer {
+    display: none;
   }
-  .right {
-    width: 100%;
+  .sidebar.left,
+  .sidebar.right {
+    width: 100% !important;
+  }
+  .sidebar.right {
     border-left: 0;
     border-top: 1px solid var(--border-subtle);
     max-height: 360px;
   }
   .canvas-area {
     min-height: 520px;
-  }
-  .tool {
-    padding: 8px 2px;
-  }
-  kbd {
-    display: none;
   }
   .welcome {
     padding: 20px 12px;

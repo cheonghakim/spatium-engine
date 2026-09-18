@@ -729,6 +729,87 @@ describe("IndoorEditor", () => {
     });
   });
 
+  describe("clearFloor", () => {
+    it("empties every space, wall, entrance, POI, and navigation node/edge on the active floor as one undoable step", () => {
+      const { editor, floor } = makeEditorWithFloor();
+      drawSquare(editor);
+      editor.setTool("wall");
+      editor.handlePointerDown(click({ x: 0, y: 0 }));
+      editor.handlePointerDown(click({ x: 4, y: 0 }));
+      editor.setTool("door");
+      editor.handlePointerDown(click({ x: 4, y: 2 }));
+      editor.setTool("poi");
+      editor.handlePointerDown(click({ x: 2, y: 2 }));
+      editor.setTool("navigation-node");
+      editor.handlePointerDown(click({ x: 1, y: 1 }));
+      editor.handlePointerDown(click({ x: 3, y: 3 }));
+      editor.setTool("navigation-edge");
+      editor.handlePointerDown(click({ x: 1, y: 1 }));
+      editor.handlePointerDown(click({ x: 3, y: 3 }));
+
+      expect(floor.spaces).toHaveLength(1);
+      expect(floor.walls.length).toBeGreaterThan(0);
+      expect(floor.entrances).toHaveLength(1);
+      expect(floor.pois).toHaveLength(1);
+      expect(floor.navigation.nodes).toHaveLength(2);
+      expect(floor.navigation.edges).toHaveLength(1);
+
+      editor.setTool("select");
+      editor.clearFloor();
+
+      expect(floor.spaces).toHaveLength(0);
+      expect(floor.walls).toHaveLength(0);
+      expect(floor.entrances).toHaveLength(0);
+      expect(floor.pois).toHaveLength(0);
+      expect(floor.navigation.nodes).toHaveLength(0);
+      expect(floor.navigation.edges).toHaveLength(0);
+
+      editor.undo();
+      expect(floor.spaces).toHaveLength(1);
+      expect(floor.walls.length).toBeGreaterThan(0);
+      expect(floor.entrances).toHaveLength(1);
+      expect(floor.pois).toHaveLength(1);
+      expect(floor.navigation.nodes).toHaveLength(2);
+      expect(floor.navigation.edges).toHaveLength(1);
+    });
+
+    it("also removes a cross-floor navigation edge stored on another floor, and restores it on undo", () => {
+      const { editor, building, floor } = makeEditorWithFloor();
+      const second = createFloor("2F", 2);
+      editor.executeCommand(new AddFloorCommand(building, second));
+
+      editor.setTool("navigation-node");
+      editor.handlePointerDown(click({ x: 0, y: 0 }));
+      const nodeA = floor.navigation.nodes[0]!;
+
+      editor.setFloor(second.id);
+      editor.handlePointerDown(click({ x: 3, y: 4 }));
+      const nodeB = second.navigation.nodes[0]!;
+
+      editor.linkFloorNode(nodeA.id, nodeB.id, "elevator");
+      expect(floor.navigation.edges).toHaveLength(1); // stored on floor 1 (the source)
+
+      editor.setFloor(floor.id);
+      editor.clearFloor(); // clears floor 1, where nodeA and the cross-floor edge live
+
+      expect(floor.navigation.nodes).toHaveLength(0);
+      expect(floor.navigation.edges).toHaveLength(0);
+      expect(second.navigation.nodes).toHaveLength(1); // floor 2 untouched
+
+      editor.undo();
+      expect(floor.navigation.nodes).toHaveLength(1);
+      expect(floor.navigation.edges).toHaveLength(1);
+      expect(floor.navigation.edges[0]).toMatchObject({ from: nodeA.id, to: nodeB.id });
+    });
+
+    it("does nothing when the floor has no content", () => {
+      const { editor, floor } = makeEditorWithFloor();
+      editor.clearFloor();
+      expect(editor.history.canUndo).toBe(false);
+      expect(floor.spaces).toHaveLength(0);
+    });
+  });
+
   it("routes undo to main history after a normal edit follows a draft edit, even with the draft still pending (F2)", () => {
     const { editor, floor } = makeEditorWithFloor();
 

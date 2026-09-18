@@ -25,7 +25,7 @@ test("autosaves edits to localStorage and restores them after a reload", async (
   // Tool buttons render a trailing <kbd> shortcut hint (e.g. "공간 그리기 R"),
   // so match by substring and scope to the toolbar to avoid also matching the
   // unrelated "＋ 공간 그리기" shortcut button in the empty-canvas welcome card.
-  const tools = page.locator(".tools");
+  const tools = page.locator(".tool-groups");
   const canvas = page.locator("canvas.studio-canvas");
   await tools.getByRole("button", { name: "공간 그리기" }).click();
   await clickCanvasOffset(page, canvas, -80, -80);
@@ -72,7 +72,7 @@ test("links stairs nodes across floors from the property panel and routes betwee
   await page.goto("/");
 
   const canvas = page.locator("canvas.studio-canvas");
-  const tools = page.locator(".tools");
+  const tools = page.locator(".tool-groups");
 
   // Place one navigation node on the initial floor (1F).
   await tools.getByRole("button", { name: "경로 그리기" }).click();
