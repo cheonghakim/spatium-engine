@@ -2,11 +2,21 @@
 
 [한국어](#한국어) | [English](#english)
 
+🔗 [Live demo](https://cheonghakim.github.io/spatium-engine) · [GitHub](https://github.com/cheonghakim/spatium-engine)
+
 ---
 
 ## English
 
 **Spatium Engine** is a TypeScript toolkit for building, viewing, and embedding indoor maps — buildings, floors, rooms, walls, doors, points of interest, and navigation/routing graphs. It's a pnpm monorepo split into a shared core, an authoring editor, a playback runtime, and the apps built on top of them.
+
+### Using it in your own project
+
+```bash
+npm install spatium-engine
+```
+
+[`spatium-engine`](packages/spatium-engine) on npm bundles `@indoor/core` (default import), `@indoor/runtime` (`spatium-engine/runtime`), and `@indoor/builder` (`spatium-engine/builder`) — the parts of this monorepo meant to be consumed by other apps. See [its README](packages/spatium-engine/README.md) for usage. Everything else below (`@indoor/editor`, `@indoor/exporter`, `@indoor/vectorize`, and the `apps/*`) is internal to Studio and not published.
 
 ### Packages (`packages/*`)
 
@@ -63,6 +73,7 @@ packages/
   builder/    event/condition/action config layer on top of runtime
   exporter/   standalone app generator (Vue / vanilla JS)
   vectorize/  floor-plan image → draft walls/spaces
+  spatium-engine/  published npm bundle of core + runtime + builder
 apps/
   studio/     the map editor
   builder/    Builder config test harness
@@ -73,7 +84,17 @@ apps/
 
 ## 한국어
 
+🔗 [데모 보기](https://cheonghakim.github.io/spatium-engine) · [GitHub](https://github.com/cheonghakim/spatium-engine)
+
 **Spatium Engine**은 건물, 층, 공간(방), 벽, 출입구, 관심 지점(POI), 이동 경로/내비게이션 그래프 등 실내 지도를 제작·조회·임베드하기 위한 TypeScript 툴킷입니다. 공유 코어, 지도 제작용 에디터, 재생 전용 런타임, 그리고 그 위에 만들어진 앱들로 구성된 pnpm 모노레포입니다.
+
+### 내 프로젝트에서 사용하기
+
+```bash
+npm install spatium-engine
+```
+
+npm에 올라가는 [`spatium-engine`](packages/spatium-engine) 패키지는 `@indoor/core`(기본 진입점), `@indoor/runtime`(`spatium-engine/runtime`), `@indoor/builder`(`spatium-engine/builder`)를 하나로 묶어 배포합니다 — 이 모노레포에서 외부 프로젝트가 실제로 가져다 쓰도록 만든 부분입니다. 사용법은 [해당 README](packages/spatium-engine/README.md)를 참고하세요. 아래 나머지(`@indoor/editor`, `@indoor/exporter`, `@indoor/vectorize`, `apps/*`)는 Studio 내부용이며 배포되지 않습니다.
 
 ### 패키지 (`packages/*`)
 
@@ -130,6 +151,7 @@ packages/
   builder/    런타임 위의 이벤트/조건/액션 설정 레이어
   exporter/   독립 실행 앱 생성기 (Vue / 바닐라 JS)
   vectorize/  도면 이미지 → 초안 벽/공간 변환
+  spatium-engine/  core + runtime + builder를 묶어 npm에 배포하는 패키지
 apps/
   studio/     지도 에디터
   builder/    Builder 설정 테스트 하네스

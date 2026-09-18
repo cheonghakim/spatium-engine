@@ -1,0 +1,71 @@
+{
+  "name": "spatium-engine",
+  "version": "0.1.0",
+  "description": "TypeScript toolkit for building, viewing, and embedding indoor maps — buildings, floors, rooms, walls, doors, POIs, and navigation/routing graphs.",
+  "license": "MIT",
+  "author": "cheonghakim",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "indoor-map",
+    "indoor-navigation",
+    "floor-plan",
+    "wayfinding",
+    "pathfinding",
+    "geojson"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cheonghakim/spatium-engine.git",
+    "directory": "packages/spatium-engine"
+  },
+  "homepage": "https://cheonghakim.github.io/spatium-engine",
+  "bugs": {
+    "url": "https://github.com/cheonghakim/spatium-engine/issues"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    },
+    "./builder": {
+      "types": "./dist/builder.d.ts",
+      "import": "./dist/builder.js",
+      "default": "./dist/builder.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsup"
+  },
+  "peerDependencies": {
+    "three": "^0.186.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@indoor/builder": "workspace:*",
+    "@indoor/core": "workspace:*",
+    "@indoor/runtime": "workspace:*",
+    "@types/three": "^0.186.0",
+    "three": "^0.186.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.6.0"
+  }
+}
