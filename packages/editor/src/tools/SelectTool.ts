@@ -2,7 +2,12 @@ import {
   distance,
   distanceToSegment,
   isPointInPolygon,
+  FURNITURE_PRESETS,
+  type Entrance,
   type Floor,
+  type Furniture,
+  type Group,
+  type NavigationNode,
   type Point,
   type POI,
   type Space,
@@ -11,20 +16,17 @@ import {
 import type { Command } from "../commands/Command.js";
 import { CompoundCommand } from "../commands/CompoundCommand.js";
 import { ChangePropertyCommand } from "../commands/PropertyCommands.js";
-import { DeleteSpaceCommand } from "../commands/SpaceCommands.js";
 import {
   MoveVertexCommand,
   AddVertexCommand,
   DeleteVertexCommand,
 } from "../commands/VertexCommands.js";
-import { DeleteEntranceCommand } from "../commands/EntranceCommands.js";
-import { DeletePOICommand, MovePOICommand } from "../commands/POICommands.js";
-import { DeleteWallCommand, MoveWallCommand } from "../commands/WallCommands.js";
-import {
-  DeleteNavigationNodeCommand,
-  DeleteNavigationEdgeCommand,
-} from "../commands/NavigationCommands.js";
+import { MovePOICommand } from "../commands/POICommands.js";
+import { MoveFurnitureCommand } from "../commands/FurnitureCommands.js";
+import { MoveWallCommand } from "../commands/WallCommands.js";
+import { buildDeleteCommand, stripFromGroups } from "../commands/buildDeleteCommand.js";
 import { findObjectKind, type SelectableKind } from "../selection/findObjectKind.js";
+import { findGroupContaining } from "../selection/findGroupContaining.js";
 import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
 
@@ -40,16 +42,154 @@ interface PoiDrag {
   originalPosition: Point;
 }
 
+interface FurnitureDrag {
+  item: Furniture;
+  originalPosition: Point;
+  origin: Point;
+}
+
+/** Local (unrotated) footprint half-extents, falling back to the type's default preset — mirrors how width/height default elsewhere (e.g. Entrance dimension fields). */
+function footprint(item: Furniture): { halfWidth: number; halfDepth: number } {
+  const preset = FURNITURE_PRESETS[item.type];
+  return {
+    halfWidth: (item.width ?? preset.width) / 2,
+    halfDepth: (item.depth ?? preset.depth) / 2,
+  };
+}
+
+/** True if `point` lands inside `item`'s footprint rectangle, accounting for its rotation. */
+function isPointInFurniture(point: Point, item: Furniture): boolean {
+  const angle = ((item.rotation ?? 0) * Math.PI) / 180;
+  const ux = Math.cos(angle),
+    uy = Math.sin(angle);
+  const dx = point.x - item.position.x,
+    dy = point.y - item.position.y;
+  // Inverse rotation (transpose, since it's orthogonal): world delta -> local axes.
+  const localX = ux * dx + uy * dy;
+  const localY = -uy * dx + ux * dy;
+  const { halfWidth, halfDepth } = footprint(item);
+  return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfDepth;
+}
+
 interface VertexDrag {
   space: Space;
   vertexIndex: number;
   originalPoint: Point;
 }
 
+/** One group member's geometry snapshot, tagged by kind so a group-move/restore knows how to read/write it. Navigation edges have no independent geometry, so they're never snapshotted — they just follow their endpoint nodes if those are also members. */
+type GroupMember =
+  | { kind: "poi"; obj: POI; original: Point }
+  | { kind: "furniture"; obj: Furniture; original: Point }
+  | { kind: "entrance"; obj: Entrance; original: Point }
+  | { kind: "navigationNode"; obj: NavigationNode; original: Point }
+  | { kind: "wall"; obj: Wall; originalStart: Point; originalEnd: Point }
+  | { kind: "space"; obj: Space; originalPolygon: Point[] };
+
+function snapshotGroupMembers(floor: Floor, group: Group): GroupMember[] {
+  const members: GroupMember[] = [];
+  for (const id of group.memberIds) {
+    const kind = findObjectKind(floor, id);
+    if (kind === "poi") {
+      const obj = floor.pois.find((p) => p.id === id);
+      if (obj) members.push({ kind, obj, original: { ...obj.position } });
+    } else if (kind === "furniture") {
+      const obj = floor.furniture.find((f) => f.id === id);
+      if (obj) members.push({ kind, obj, original: { ...obj.position } });
+    } else if (kind === "entrance") {
+      const obj = floor.entrances.find((e) => e.id === id);
+      if (obj) members.push({ kind, obj, original: { ...obj.position } });
+    } else if (kind === "navigationNode") {
+      const obj = floor.navigation.nodes.find((n) => n.id === id);
+      if (obj) members.push({ kind, obj, original: { ...obj.position } });
+    } else if (kind === "wall") {
+      const obj = floor.walls.find((w) => w.id === id);
+      if (obj)
+        members.push({ kind, obj, originalStart: { ...obj.start }, originalEnd: { ...obj.end } });
+    } else if (kind === "space") {
+      const obj = floor.spaces.find((s) => s.id === id);
+      if (obj) members.push({ kind, obj, originalPolygon: obj.polygon.map((p) => ({ ...p })) });
+    }
+  }
+  return members;
+}
+
+/** Live drag preview: translates every member by the same world-space delta, without touching history. */
+function applyGroupDelta(members: readonly GroupMember[], dx: number, dy: number): void {
+  for (const member of members) {
+    if (member.kind === "wall") {
+      member.obj.start = { x: member.originalStart.x + dx, y: member.originalStart.y + dy };
+      member.obj.end = { x: member.originalEnd.x + dx, y: member.originalEnd.y + dy };
+    } else if (member.kind === "space") {
+      member.obj.polygon = member.originalPolygon.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    } else {
+      member.obj.position = { x: member.original.x + dx, y: member.original.y + dy };
+    }
+  }
+}
+
+/** Reverts every member to its drag-start geometry (Escape / deactivate) — no commands, no undo entry. */
+function restoreGroupMembers(members: readonly GroupMember[]): void {
+  for (const member of members) {
+    if (member.kind === "wall") {
+      member.obj.start = member.originalStart;
+      member.obj.end = member.originalEnd;
+    } else if (member.kind === "space") {
+      member.obj.polygon = member.originalPolygon;
+    } else {
+      member.obj.position = member.original;
+    }
+  }
+}
+
+/**
+ * Commits a finished group drag: for each member, reads its current
+ * (live-updated by applyGroupDelta) geometry as the final value, reverts it
+ * to the drag-start snapshot, then builds the one command that carries it
+ * back to that final value — mirroring the existing revert-then-construct
+ * pattern used by every other drag in this file (e.g. the single-wall case
+ * in onPointerUp), so each command's own "previous value" is captured
+ * correctly at construction time.
+ */
+function buildGroupMoveCommands(members: readonly GroupMember[]): Command[] {
+  const commands: Command[] = [];
+  for (const member of members) {
+    if (member.kind === "wall") {
+      const finalStart = { ...member.obj.start };
+      const finalEnd = { ...member.obj.end };
+      member.obj.start = member.originalStart;
+      member.obj.end = member.originalEnd;
+      if (
+        distance(finalStart, member.originalStart) + distance(finalEnd, member.originalEnd) >
+        0.00001
+      )
+        commands.push(new MoveWallCommand(member.obj, finalStart, finalEnd));
+    } else if (member.kind === "space") {
+      const finalPolygon = member.obj.polygon.map((p) => ({ ...p }));
+      member.obj.polygon = member.originalPolygon;
+      commands.push(new ChangePropertyCommand(member.obj, "polygon", finalPolygon, "Move Space"));
+    } else {
+      const finalPosition = { ...member.obj.position };
+      member.obj.position = member.original;
+      if (distance(finalPosition, member.original) > 0.00001)
+        commands.push(new ChangePropertyCommand(member.obj, "position", finalPosition, "Move"));
+    }
+  }
+  return commands;
+}
+
+interface GroupDrag {
+  group: Group;
+  members: GroupMember[];
+  origin: Point;
+}
+
 export class SelectTool implements EditorTool {
   readonly id = "select";
 
   private drag: PoiDrag | null = null;
+  private furnitureDrag: FurnitureDrag | null = null;
+  private groupDrag: GroupDrag | null = null;
   private vertexDrag: VertexDrag | null = null;
   private wallDrag: {
     wall: Wall;
@@ -69,10 +209,14 @@ export class SelectTool implements EditorTool {
       this.wallDrag.wall.end = this.wallDrag.end;
     }
     if (this.drag) this.drag.poi.position = this.drag.originalPosition;
+    if (this.furnitureDrag) this.furnitureDrag.item.position = this.furnitureDrag.originalPosition;
+    if (this.groupDrag) restoreGroupMembers(this.groupDrag.members);
     if (this.vertexDrag)
       this.vertexDrag.space.polygon[this.vertexDrag.vertexIndex] = this.vertexDrag.originalPoint;
     this.wallDrag = null;
     this.drag = null;
+    this.furnitureDrag = null;
+    this.groupDrag = null;
     this.vertexDrag = null;
   }
 
@@ -131,7 +275,17 @@ export class SelectTool implements EditorTool {
       }
     }
 
-    const hit = this.hitTest(event.worldPoint, floor, hitRadiusWorld);
+    const rawHit = this.hitTest(event.worldPoint, floor, hitRadiusWorld);
+
+    // Clicking any member of a group selects the group as a whole (Figma/
+    // AutoCAD convention) — resolved here, once, so every existing
+    // select/add/clear/drag/delete path below just sees a "group" hit and
+    // needs no group-specific branching of its own.
+    let hit = rawHit;
+    if (hit && hit.kind !== "group") {
+      const containingGroup = findGroupContaining(floor, hit.id);
+      if (containingGroup) hit = { id: containingGroup.id, kind: "group" };
+    }
 
     if (!hit) {
       if (!event.shiftKey) this.context.selection.clear();
@@ -144,9 +298,28 @@ export class SelectTool implements EditorTool {
       this.context.selection.select(hit.id);
     }
 
+    if (hit.kind === "group" && !event.shiftKey) {
+      const group = floor.groups.find((g) => g.id === hit.id);
+      if (group) {
+        this.groupDrag = {
+          group,
+          members: snapshotGroupMembers(floor, group),
+          origin: { ...event.worldPoint },
+        };
+      }
+    }
     if (hit.kind === "poi") {
       const poi = floor.pois.find((p) => p.id === hit.id);
       if (poi) this.drag = { poi, originalPosition: { ...poi.position } };
+    }
+    if (hit.kind === "furniture") {
+      const item = floor.furniture.find((f) => f.id === hit.id);
+      if (item && !event.shiftKey)
+        this.furnitureDrag = {
+          item,
+          originalPosition: { ...item.position },
+          origin: { ...event.worldPoint },
+        };
     }
     if (hit.kind === "wall" && !event.shiftKey) {
       const wall = floor.walls.find((w) => w.id === hit.id)!;
@@ -205,6 +378,31 @@ export class SelectTool implements EditorTool {
       return;
     }
 
+    if (this.groupDrag) {
+      const { members, origin } = this.groupDrag;
+      applyGroupDelta(members, event.worldPoint.x - origin.x, event.worldPoint.y - origin.y);
+      this.context.requestRender();
+      return;
+    }
+
+    if (this.furnitureDrag) {
+      const { originalPosition, origin } = this.furnitureDrag;
+      const target = {
+        x: originalPosition.x + event.worldPoint.x - origin.x,
+        y: originalPosition.y + event.worldPoint.y - origin.y,
+      };
+      const floor = this.context.getActiveFloor();
+      const point = floor
+        ? this.context.snapping.resolve(target, {
+            floor,
+            excludeId: this.furnitureDrag.item.id,
+          })
+        : target;
+      this.furnitureDrag.item.position = point;
+      this.context.requestRender();
+      return;
+    }
+
     if (!this.drag) return;
     const floor = this.context.getActiveFloor();
     const point = floor
@@ -232,6 +430,32 @@ export class SelectTool implements EditorTool {
       space.polygon[vertexIndex] = originalPoint;
       this.context.executeCommand(new MoveVertexCommand(space, vertexIndex, finalPoint));
       this.vertexDrag = null;
+      return;
+    }
+
+    if (this.groupDrag) {
+      const commands = buildGroupMoveCommands(this.groupDrag.members);
+      this.groupDrag = null;
+      if (commands.length) this.context.executeCommand(new CompoundCommand("Move Group", commands));
+      return;
+    }
+
+    if (this.furnitureDrag) {
+      const { item, originalPosition } = this.furnitureDrag;
+      const finalPosition = { ...item.position };
+      item.position = originalPosition;
+      if (distance(originalPosition, finalPosition) > 0) {
+        const commands: Command[] = [new MoveFurnitureCommand(item, finalPosition)];
+        const spaceId = this.context
+          .getActiveFloor()
+          ?.spaces.find((space) => isPointInPolygon(finalPosition, space.polygon))?.id;
+        if (item.spaceId !== spaceId)
+          commands.push(
+            new ChangePropertyCommand(item, "spaceId", spaceId, "Update Furniture Space"),
+          );
+        this.context.executeCommand(new CompoundCommand("Move Furniture", commands));
+      }
+      this.furnitureDrag = null;
       return;
     }
 
@@ -269,13 +493,26 @@ export class SelectTool implements EditorTool {
 
     const kind = findObjectKind(floor, entry.id);
     if (!kind) return;
-    this.context.executeCommand(buildDeleteCommand(this.context, floor, entry.id, kind));
+    const commands: Command[] = [
+      buildDeleteCommand(floor, entry.id, kind, this.context.findNodeBuilding),
+    ];
+    // Deleting a single grouped object (as opposed to deleting the whole
+    // group, handled inside buildDeleteCommand's "group" branch) must also
+    // drop it from its group's membership, dissolving the group if that
+    // leaves it with ≤1 member.
+    if (kind !== "group") commands.push(...stripFromGroups(floor, entry.id));
+    this.context.executeCommand(
+      commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!,
+    );
     this.context.selection.clear();
   }
 
   private hitTest(point: Point, floor: Floor, hitRadiusWorld: number): HitResult | null {
     for (const poi of floor.pois) {
       if (distance(point, poi.position) <= hitRadiusWorld) return { id: poi.id, kind: "poi" };
+    }
+    for (const item of floor.furniture) {
+      if (isPointInFurniture(point, item)) return { id: item.id, kind: "furniture" };
     }
     for (const entrance of floor.entrances) {
       if (distance(point, entrance.position) <= hitRadiusWorld) {
@@ -309,72 +546,6 @@ export class SelectTool implements EditorTool {
     }
     return null;
   }
-}
-
-/**
- * Deleting an object can leave dangling cross-references elsewhere (an
- * Entrance's spaceA/spaceB/wallId, a POI's spaceId, a NavigationEdge's
- * from/to) — bundle the primary delete with commands that clear/remove those
- * references so the whole thing undoes as one step.
- *
- * Entrance/POI/Wall references are only ever stored on the same floor as the
- * object they reference, so those cases only need to search `floor`'s own
- * arrays. A NavigationNode is different: IndoorEditor.linkFloorNode can store
- * a cross-floor edge on *either* endpoint's floor (whichever node was the
- * "source" when the link was created), so deleting a node has to search
- * every floor of the building that owns it via `context.findNodeBuilding`,
- * not just the active floor.
- */
-function buildDeleteCommand(
-  context: ToolContext,
-  floor: Floor,
-  id: string,
-  kind: SelectableKind,
-): Command {
-  const commands: Command[] = [];
-
-  if (kind === "space") {
-    for (const entrance of floor.entrances) {
-      if (entrance.spaceA === id)
-        commands.push(
-          new ChangePropertyCommand(entrance, "spaceA", undefined, "Clear Entrance Space"),
-        );
-      if (entrance.spaceB === id)
-        commands.push(
-          new ChangePropertyCommand(entrance, "spaceB", undefined, "Clear Entrance Space"),
-        );
-    }
-    for (const poi of floor.pois) {
-      if (poi.spaceId === id)
-        commands.push(new ChangePropertyCommand(poi, "spaceId", undefined, "Clear POI Space"));
-    }
-    commands.push(new DeleteSpaceCommand(floor, id));
-  } else if (kind === "wall") {
-    for (const entrance of floor.entrances) {
-      if (entrance.wallId === id)
-        commands.push(
-          new ChangePropertyCommand(entrance, "wallId", undefined, "Clear Entrance Wall"),
-        );
-    }
-    commands.push(new DeleteWallCommand(floor, id));
-  } else if (kind === "navigationNode") {
-    const buildingFloors = context.findNodeBuilding(id) ?? [floor];
-    for (const floorInBuilding of buildingFloors) {
-      for (const edge of floorInBuilding.navigation.edges) {
-        if (edge.from === id || edge.to === id)
-          commands.push(new DeleteNavigationEdgeCommand(floorInBuilding, edge.id));
-      }
-    }
-    commands.push(new DeleteNavigationNodeCommand(floor, id));
-  } else if (kind === "entrance") {
-    commands.push(new DeleteEntranceCommand(floor, id));
-  } else if (kind === "poi") {
-    commands.push(new DeletePOICommand(floor, id));
-  } else {
-    commands.push(new DeleteNavigationEdgeCommand(floor, id));
-  }
-
-  return commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!;
 }
 
 function findVertexIndex(point: Point, space: Space, hitRadiusWorld: number): number | null {

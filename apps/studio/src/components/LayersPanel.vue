@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { IndoorEditor, LayerId } from "@indoor/editor";
+import type { Group } from "@indoor/core";
 import {
   mdiDoorOpen,
   mdiEyeOffOutline,
@@ -9,6 +10,9 @@ import {
   mdiMagnify,
   mdiMapMarkerOutline,
   mdiRoutes,
+  mdiSofaOutline,
+  mdiUngroup,
+  mdiVectorCombine,
   mdiVectorSquare,
   mdiWall,
 } from "@mdi/js";
@@ -17,14 +21,35 @@ import MdiIcon from "./MdiIcon.vue";
 const props = defineProps<{ editor: IndoorEditor }>();
 
 const revision = ref(0);
+const selectionRevision = ref(0);
 let unsubscribers: Array<() => void> = [];
 
 onMounted(() => {
-  unsubscribers = [props.editor.on("projectChanged", () => revision.value++)];
+  unsubscribers = [
+    props.editor.on("projectChanged", () => revision.value++),
+    props.editor.on("selectionChanged", () => selectionRevision.value++),
+  ];
 });
 onBeforeUnmount(() => {
   for (const unsubscribe of unsubscribers) unsubscribe();
 });
+
+const groups = computed(() => {
+  revision.value;
+  return props.editor.getActiveFloor()?.groups ?? [];
+});
+const selectedGroupId = computed(() => {
+  selectionRevision.value;
+  const entries = props.editor.selection.current;
+  return entries.length === 1 ? entries[0]!.id : null;
+});
+function selectGroup(group: Group): void {
+  props.editor.focusObject(group.id);
+}
+function ungroup(group: Group): void {
+  props.editor.selection.select(group.id);
+  props.editor.ungroupSelection();
+}
 
 const visibility = computed(() => {
   revision.value;
@@ -38,6 +63,7 @@ const LAYERS: Array<{ id: LayerId; label: string; icon: string; color: string }>
   { id: "walls", label: "벽", icon: mdiWall, color: "#b8bdc7" },
   { id: "entrances", label: "출입구", icon: mdiDoorOpen, color: "#8fb3ae" },
   { id: "pois", label: "POI", icon: mdiMapMarkerOutline, color: "#c9aa6e" },
+  { id: "furniture", label: "가구", icon: mdiSofaOutline, color: "#b68b60" },
   { id: "navigation", label: "내비게이션", icon: mdiRoutes, color: "#9298a3" },
 ];
 
@@ -76,6 +102,32 @@ function toggle(id: LayerId): void {
       </li>
       <li v-if="!filteredLayers.length" class="empty-hint">일치하는 레이어가 없습니다.</li>
     </ul>
+
+    <template v-if="groups.length">
+      <h3 class="panel-heading groups-heading">그룹</h3>
+      <ul class="layer-list">
+        <li
+          v-for="group in groups"
+          :key="group.id"
+          class="layer-row group-row"
+          :class="{ selected: group.id === selectedGroupId }"
+          @click="selectGroup(group)"
+        >
+          <MdiIcon :path="mdiVectorCombine" :size="15" class="layer-icon" />
+          <span class="layer-name">{{ group.label }}</span>
+          <span class="member-count">{{ group.memberIds.length }}</span>
+          <button
+            type="button"
+            class="btn-ghost btn-icon ungroup-toggle"
+            title="그룹 해제"
+            aria-label="그룹 해제"
+            @click.stop="ungroup(group)"
+          >
+            <MdiIcon :path="mdiUngroup" :size="15" />
+          </button>
+        </li>
+      </ul>
+    </template>
   </div>
 </template>
 
@@ -160,5 +212,28 @@ function toggle(id: LayerId): void {
   padding: var(--space-2);
   font-size: var(--font-size-secondary);
   color: var(--text-tertiary);
+}
+
+.groups-heading {
+  margin-top: var(--space-1);
+}
+.group-row {
+  cursor: pointer;
+}
+.group-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.member-count {
+  flex-shrink: 0;
+  font-size: var(--font-size-caption);
+  color: var(--text-disabled);
+  font-variant-numeric: tabular-nums;
+}
+.ungroup-toggle {
+  color: var(--text-disabled);
+}
+.group-row:hover .ungroup-toggle {
+  color: var(--text-secondary);
 }
 </style>

@@ -1,4 +1,4 @@
-import { createFloor, createPOI, createSpace } from "@indoor/core";
+import { createFloor, createFurniture, createPOI, createSpace } from "@indoor/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Renderer3D } from "./Renderer3D.js";
@@ -47,6 +47,19 @@ afterEach(() => {
 });
 
 describe("Renderer3D", () => {
+  it("automatically frames the first furniture on an otherwise empty floor", () => {
+    const renderer = new Renderer3D(container);
+    const fit = vi.spyOn(renderer, "fitView");
+    const floor = createFloor("1F", 1);
+    renderer.update({ floor, overlays: [], routePoints: [] });
+    expect(fit).not.toHaveBeenCalled();
+    floor.furniture.push(createFurniture(floor.id, { x: 100, y: 100 }, "bed"));
+    renderer.update({ floor, overlays: [], routePoints: [] });
+    expect(fit).toHaveBeenCalledOnce();
+    renderer.update({ floor, overlays: [], routePoints: [] });
+    expect(fit).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
   it("dispose() tears down cleanly: no throw, animation frame cancelled, controls disposed", () => {
     const cafSpy = vi.spyOn(window, "cancelAnimationFrame");
     const controlsDisposeSpy = vi.spyOn(OrbitControls.prototype, "dispose");

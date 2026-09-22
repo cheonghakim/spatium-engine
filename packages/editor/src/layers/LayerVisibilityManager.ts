@@ -1,4 +1,5 @@
-export type LayerId = "reference" | "spaces" | "walls" | "entrances" | "pois" | "navigation";
+export type LayerId =
+  "reference" | "spaces" | "walls" | "entrances" | "pois" | "furniture" | "navigation";
 
 const DEFAULT_VISIBILITY: Record<LayerId, boolean> = {
   reference: true,
@@ -6,6 +7,7 @@ const DEFAULT_VISIBILITY: Record<LayerId, boolean> = {
   walls: true,
   entrances: true,
   pois: true,
+  furniture: true,
   navigation: true,
 };
 

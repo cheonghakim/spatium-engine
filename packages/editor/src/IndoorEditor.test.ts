@@ -3,6 +3,8 @@ import {
   createEmptyProject,
   createEntrance,
   createFloor,
+  createFurniture,
+  createPOI,
   type Point,
 } from "@indoor/core";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +13,8 @@ import { ChangePropertyCommand } from "./commands/PropertyCommands.js";
 import { AddEntranceCommand } from "./commands/EntranceCommands.js";
 import { AddFloorCommand } from "./commands/FloorCommands.js";
 import { AddBuildingCommand } from "./commands/BuildingCommands.js";
+import { AddPOICommand } from "./commands/POICommands.js";
+import { AddFurnitureCommand } from "./commands/FurnitureCommands.js";
 import type { EditorPointerEvent } from "./tools/EditorTool.js";
 
 function click(point: Point): EditorPointerEvent {
@@ -938,5 +942,105 @@ describe("IndoorEditor", () => {
     editor.undo();
 
     expect(floor.spaces).toHaveLength(0); // the main-history edit was undone, not silently swallowed
+  });
+});
+
+describe("IndoorEditor grouping", () => {
+  it("groups a multi-object selection as a unit, and ungroup restores individual selection", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const item = createFurniture(floor.id, { x: 1, y: 1 });
+    editor.executeCommand(new AddPOICommand(floor, poi));
+    editor.executeCommand(new AddFurnitureCommand(floor, item));
+
+    editor.selection.select(poi.id);
+    editor.selection.add(item.id);
+    editor.groupSelection("책상 세트");
+
+    expect(floor.groups).toHaveLength(1);
+    const group = floor.groups[0]!;
+    expect([...group.memberIds].sort()).toEqual([item.id, poi.id].sort());
+    expect(editor.selection.current).toEqual([{ id: group.id }]);
+
+    editor.ungroupSelection();
+    expect(floor.groups).toHaveLength(0);
+    expect(editor.selection.current.map((e) => e.id).sort()).toEqual([item.id, poi.id].sort());
+  });
+
+  it("does not create a group from fewer than 2 selected objects", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    editor.executeCommand(new AddPOICommand(floor, poi));
+
+    editor.selection.select(poi.id);
+    editor.groupSelection();
+
+    expect(floor.groups).toHaveLength(0);
+  });
+
+  it("undoes group creation as a single step", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const item = createFurniture(floor.id, { x: 1, y: 1 });
+    editor.executeCommand(new AddPOICommand(floor, poi));
+    editor.executeCommand(new AddFurnitureCommand(floor, item));
+    editor.selection.select(poi.id);
+    editor.selection.add(item.id);
+    editor.groupSelection();
+    expect(floor.groups).toHaveLength(1);
+
+    editor.undo();
+    expect(floor.groups).toHaveLength(0);
+  });
+
+  it("deleting a group (via Delete on the select tool) removes the group and every member in one undo step", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const item = createFurniture(floor.id, { x: 1, y: 1 });
+    editor.executeCommand(new AddPOICommand(floor, poi));
+    editor.executeCommand(new AddFurnitureCommand(floor, item));
+    editor.selection.select(poi.id);
+    editor.selection.add(item.id);
+    editor.groupSelection();
+    const groupId = floor.groups[0]!.id;
+
+    editor.setTool("select");
+    editor.handleKeyDown({ key: "Delete", shiftKey: false, ctrlKey: false, altKey: false });
+
+    expect(floor.groups).toHaveLength(0);
+    expect(floor.pois).toHaveLength(0);
+    expect(floor.furniture).toHaveLength(0);
+
+    editor.undo();
+    expect(floor.groups.map((g) => g.id)).toEqual([groupId]);
+    expect(floor.pois).toHaveLength(1);
+    expect(floor.furniture).toHaveLength(1);
+  });
+
+  it("clicking any member selects the whole group, and dragging moves every member together", () => {
+    const { editor, floor } = makeEditorWithFloor();
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const item = createFurniture(floor.id, { x: 4, y: 0 });
+    editor.executeCommand(new AddPOICommand(floor, poi));
+    editor.executeCommand(new AddFurnitureCommand(floor, item));
+    editor.selection.select(poi.id);
+    editor.selection.add(item.id);
+    editor.groupSelection();
+    const groupId = floor.groups[0]!.id;
+
+    editor.setTool("select");
+    editor.selection.clear();
+    editor.handlePointerDown(click({ x: 0, y: 0 })); // clicks the POI directly
+    expect(editor.selection.current).toEqual([{ id: groupId }]);
+
+    editor.handlePointerMove(click({ x: 2, y: 1 }));
+    editor.handlePointerUp(click({ x: 2, y: 1 }));
+
+    expect(poi.position).toEqual({ x: 2, y: 1 });
+    expect(item.position).toEqual({ x: 6, y: 1 });
+
+    editor.undo();
+    expect(poi.position).toEqual({ x: 0, y: 0 });
+    expect(item.position).toEqual({ x: 4, y: 0 });
   });
 });

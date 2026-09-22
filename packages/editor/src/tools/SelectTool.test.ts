@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createEntrance,
   createFloor,
+  createFurniture,
   createNavigationEdge,
   createNavigationNode,
   createPOI,
@@ -57,6 +58,32 @@ const down = (
 const del = { key: "Delete", shiftKey: false, ctrlKey: false, altKey: false };
 
 describe("SelectTool", () => {
+  it("preserves the furniture grab offset and updates space membership with undo/redo", () => {
+    const floor = createFloor("1F", 1);
+    const space = createSpace(floor.id, [
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 4 },
+      { x: 0, y: 4 },
+    ]);
+    floor.spaces.push(space);
+    const item = createFurniture(floor.id, { x: 2, y: 2 });
+    item.spaceId = space.id;
+    floor.furniture.push(item);
+    const { context, history } = createContext(floor);
+    const tool = new SelectTool(context);
+    tool.onPointerDown(down(2.4, 2));
+    tool.onPointerMove(down(8.4, 2));
+    tool.onPointerUp();
+    expect(item.position.x).toBeCloseTo(8);
+    expect(item.spaceId).toBeUndefined();
+    history.undo();
+    expect(item.position).toEqual({ x: 2, y: 2 });
+    expect(item.spaceId).toBe(space.id);
+    history.redo();
+    expect(item.position.x).toBeCloseTo(8);
+    expect(item.spaceId).toBeUndefined();
+  });
   it("selects a space by clicking inside its polygon", () => {
     const floor = createFloor("1F", 1);
     const space = createSpace(floor.id, [

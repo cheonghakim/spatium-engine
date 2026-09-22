@@ -1,4 +1,12 @@
-import { distanceToSegment, type Entrance, type Floor, type Point } from "@indoor/core";
+import {
+  distanceToSegment,
+  FURNITURE_PRESETS,
+  type Entrance,
+  type Floor,
+  type Furniture,
+  type Group,
+  type Point,
+} from "@indoor/core";
 import type {
   DraftSpaceEntry,
   DraftElementEntry,
@@ -49,6 +57,8 @@ const COLORS = {
   spaceSelectedStroke: "#6e8cff",
   entrance: "#8fb3ae",
   poi: "#c9aa6e",
+  furniture: "#b68b60",
+  furnitureFill: "rgba(182, 139, 96, 0.12)",
   draft: "#d7dae0",
   calibration: "#6e8cff",
   draftWallAccepted: "#d6a84f",
@@ -165,6 +175,19 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       }
     }
 
+    if (state.layerVisibility.furniture) {
+      for (const item of state.floor.furniture) {
+        const selected = state.selection.some((s) => s.id === item.id);
+        drawFurniture(
+          ctx,
+          state.camera,
+          item,
+          selected ? COLORS.wallSelected : COLORS.furniture,
+          selected ? COLORS.spaceSelectedFill : COLORS.furnitureFill,
+        );
+      }
+    }
+
     if (state.layerVisibility.navigation) {
       const nodesById = new Map(state.floor.navigation.nodes.map((n) => [n.id, n]));
       for (const edge of state.floor.navigation.edges) {
@@ -184,6 +207,12 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
           pending ? 7 : 5,
         );
       }
+    }
+
+    for (const group of state.floor.groups) {
+      if (!state.selection.some((s) => s.id === group.id)) continue;
+      const bounds = groupBounds(state.floor, group);
+      if (bounds) drawGroupOutline(ctx, state.camera, bounds, group.label);
     }
   }
 
@@ -303,6 +332,145 @@ function drawElement(
       drawLine(ctx, camera, point(-width / 2, 0), point(-width / 2, width), color, 2);
   }
   drawDot(ctx, camera, element.position, color, 4);
+}
+
+/**
+ * Draws a furniture item's rotated footprint plus a thicker "back" edge
+ * (the local -depth side) as an at-a-glance orientation cue — matching how
+ * drawElement's door/window silhouettes hint at facing without a full 3D
+ * render. All furniture types share one muted color; the footprint size and
+ * label (in the property panel) carry the distinction, not a per-type hue.
+ */
+function drawFurniture(
+  ctx: CanvasRenderingContext2D,
+  camera: EditorCamera,
+  item: Pick<Furniture, "position" | "type" | "rotation" | "width" | "depth">,
+  color: string,
+  fillColor: string,
+): void {
+  const preset = FURNITURE_PRESETS[item.type];
+  const width = item.width ?? preset.width;
+  const depth = item.depth ?? preset.depth;
+  const angle = ((item.rotation ?? 0) * Math.PI) / 180,
+    ux = Math.cos(angle),
+    uy = Math.sin(angle);
+  const point = (x: number, y: number) => ({
+    x: item.position.x + ux * x - uy * y,
+    y: item.position.y + uy * x + ux * y,
+  });
+  drawPolygon(
+    ctx,
+    camera,
+    [
+      point(-width / 2, -depth / 2),
+      point(width / 2, -depth / 2),
+      point(width / 2, depth / 2),
+      point(-width / 2, depth / 2),
+    ],
+    fillColor,
+    color,
+    true,
+  );
+  drawLine(ctx, camera, point(-width / 2, -depth / 2), point(width / 2, -depth / 2), color, 3);
+}
+
+/** World-space bounding box spanning every one of a group's members, regardless of kind. Null if none of its members resolve to anything on the floor (e.g. all deleted). */
+function groupBounds(
+  floor: Floor,
+  group: Group,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  const include = (p: Point) => {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  };
+
+  for (const id of group.memberIds) {
+    const space = floor.spaces.find((s) => s.id === id);
+    if (space) {
+      for (const p of space.polygon) include(p);
+      continue;
+    }
+    const wall = floor.walls.find((w) => w.id === id);
+    if (wall) {
+      include(wall.start);
+      include(wall.end);
+      continue;
+    }
+    const entrance = floor.entrances.find((e) => e.id === id);
+    if (entrance) {
+      include(entrance.position);
+      continue;
+    }
+    const poi = floor.pois.find((p) => p.id === id);
+    if (poi) {
+      include(poi.position);
+      continue;
+    }
+    const item = floor.furniture.find((f) => f.id === id);
+    if (item) {
+      include(item.position);
+      continue;
+    }
+    const node = floor.navigation.nodes.find((n) => n.id === id);
+    if (node) {
+      include(node.position);
+      continue;
+    }
+    const edge = floor.navigation.edges.find((e) => e.id === id);
+    if (edge) {
+      const from = floor.navigation.nodes.find((n) => n.id === edge.from);
+      const to = floor.navigation.nodes.find((n) => n.id === edge.to);
+      if (from) include(from.position);
+      if (to) include(to.position);
+    }
+  }
+
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+const GROUP_OUTLINE_PADDING_METERS = 0.3;
+
+/** Dashed bounding box + a small name chip — the "you're editing a group" indicator, shown only while the group is the current selection. */
+function drawGroupOutline(
+  ctx: CanvasRenderingContext2D,
+  camera: EditorCamera,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  label: string,
+): void {
+  const topLeft = camera.worldToScreen({
+    x: bounds.minX - GROUP_OUTLINE_PADDING_METERS,
+    y: bounds.maxY + GROUP_OUTLINE_PADDING_METERS,
+  });
+  const bottomRight = camera.worldToScreen({
+    x: bounds.maxX + GROUP_OUTLINE_PADDING_METERS,
+    y: bounds.minY - GROUP_OUTLINE_PADDING_METERS,
+  });
+
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = COLORS.wallSelected;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+  ctx.restore();
+
+  ctx.font = "600 11px system-ui, sans-serif";
+  const chipPadding = 5;
+  const chipHeight = 18;
+  const chipWidth = ctx.measureText(label).width + chipPadding * 2;
+  const chipX = topLeft.x;
+  const chipY = topLeft.y - chipHeight - 3;
+  ctx.fillStyle = COLORS.wallSelected;
+  ctx.fillRect(chipX, chipY, chipWidth, chipHeight);
+  ctx.fillStyle = COLORS.background;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText(label, chipX + chipPadding, chipY + chipHeight / 2 + 1);
 }
 
 function drawReference(

@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   type Entrance,
   type Floor,
+  type Furniture,
   type POI,
   type Point,
   type Space,
@@ -10,6 +11,12 @@ import {
   type Wall,
 } from "@indoor/core";
 import { buildArchitecture, stairSpaceGeometry } from "./architecture.js";
+import { buildFurnitureModel } from "./furniture.js";
+import {
+  loadFurnitureGLB,
+  instanceFurnitureGLB,
+  disposeImportedModel,
+} from "./importedFurniture.js";
 import type { Overlay } from "../overlay.js";
 import type { RuntimeTheme } from "../theme.js";
 
@@ -91,6 +98,7 @@ export class Renderer3D {
   private readonly wallGroup = new THREE.Group();
   private readonly entranceGroup = new THREE.Group();
   private readonly poiGroup = new THREE.Group();
+  private readonly furnitureGroup = new THREE.Group();
   private readonly overlayGroup = new THREE.Group();
   private readonly routeGroup = new THREE.Group();
   private readonly playbackGroup = new THREE.Group();
@@ -113,6 +121,8 @@ export class Renderer3D {
   private highlightedSpaceMesh: THREE.Object3D | null = null;
   private animationHandle: number | null = null;
   private disposed = false;
+  private furnitureRevision = 0;
+  private readonly importedModels = new Map<string, Promise<THREE.Group>>();
   private fittedFloorId: string | undefined;
   private hadGeometry = false;
   private routePlayback: ActiveRoutePlayback | null = null;
@@ -144,6 +154,7 @@ export class Renderer3D {
       this.wallGroup,
       this.entranceGroup,
       this.poiGroup,
+      this.furnitureGroup,
       this.overlayGroup,
       this.routeGroup,
       this.playbackGroup,
@@ -353,12 +364,14 @@ export class Renderer3D {
     this.rebuildSpaces(state.floor?.spaces ?? []);
     this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
     this.rebuildPois(state.floor?.pois ?? []);
+    this.rebuildFurniture(state.floor?.furniture ?? []);
     this.rebuildOverlays(state.overlays, state.floor?.id);
     this.rebuildRoute(state.routePoints);
     const bounds = new THREE.Box3()
       .setFromObject(this.spaceGroup)
       .union(new THREE.Box3().setFromObject(this.wallGroup))
-      .union(new THREE.Box3().setFromObject(this.entranceGroup));
+      .union(new THREE.Box3().setFromObject(this.entranceGroup))
+      .union(new THREE.Box3().setFromObject(this.furnitureGroup));
     const hasGeometry = !bounds.isEmpty();
     if (hasGeometry && (this.fittedFloorId !== state.floor?.id || !this.hadGeometry))
       this.fitView();
@@ -369,7 +382,13 @@ export class Renderer3D {
   /** Frame the actual model, including off-origin and unusually large floor plans. */
   fitView(): void {
     const bounds = new THREE.Box3();
-    for (const group of [this.spaceGroup, this.wallGroup, this.entranceGroup, this.poiGroup])
+    for (const group of [
+      this.spaceGroup,
+      this.wallGroup,
+      this.entranceGroup,
+      this.poiGroup,
+      this.furnitureGroup,
+    ])
       bounds.union(new THREE.Box3().setFromObject(group));
     if (bounds.isEmpty()) return;
     const center = bounds.getCenter(new THREE.Vector3());
@@ -389,6 +408,9 @@ export class Renderer3D {
 
   dispose(): void {
     this.disposed = true;
+    for (const pending of this.importedModels.values())
+      pending.then(disposeImportedModel, () => {});
+    this.importedModels.clear();
     if (this.animationHandle !== null) cancelAnimationFrame(this.animationHandle);
     this.renderer.domElement.removeEventListener("pointermove", this.handlePointerMove);
     this.renderer.domElement.removeEventListener("click", this.handleClick);
@@ -403,6 +425,7 @@ export class Renderer3D {
       this.wallGroup,
       this.entranceGroup,
       this.poiGroup,
+      this.furnitureGroup,
       this.overlayGroup,
       this.routeGroup,
       this.playbackGroup,
@@ -490,6 +513,48 @@ export class Renderer3D {
       this.poiByMesh.set(mesh, poi);
     }
     geometry.dispose();
+  }
+
+  /** Builds a small procedural box model per item (see render/furniture.ts) — no external assets. */
+  private rebuildFurniture(items: readonly Furniture[]): void {
+    const revision = ++this.furnitureRevision;
+    disposeGroup(this.furnitureGroup);
+    const used = new Set(items.map((item) => item.modelData).filter(Boolean));
+    for (const [data, pending] of this.importedModels) {
+      if (!used.has(data)) {
+        this.importedModels.delete(data);
+        pending.then(disposeImportedModel, () => {});
+      }
+    }
+
+    for (const item of items) {
+      const model = buildFurnitureModel(item);
+      model.position.copy(this.toGroundVector(item.position, 0));
+      model.rotation.y = THREE.MathUtils.degToRad(item.rotation ?? 0);
+      this.furnitureGroup.add(model);
+      if (item.modelData) {
+        let pending = this.importedModels.get(item.modelData);
+        if (!pending) {
+          pending = loadFurnitureGLB(item.modelData);
+          this.importedModels.set(item.modelData, pending);
+        }
+        pending.then(
+          (source) => {
+            if (this.disposed || revision !== this.furnitureRevision) return;
+            const instance = instanceFurnitureGLB(source, item);
+            disposeGroup(model);
+            model.add(instance);
+          },
+          () => {
+            if (this.disposed || revision !== this.furnitureRevision) return;
+            model.traverse((object) => {
+              if (object instanceof THREE.Mesh)
+                (object.material as THREE.MeshStandardMaterial).color.setHex(0xcc5555);
+            });
+          },
+        );
+      }
+    }
   }
 
   private rebuildOverlays(overlays: readonly Overlay[], activeFloorId: string | undefined): void {
@@ -586,6 +651,7 @@ export class Renderer3D {
       this.rebuildSpaces(state.floor?.spaces ?? []);
       this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
       this.rebuildPois(state.floor?.pois ?? []);
+      this.rebuildFurniture(state.floor?.furniture ?? []);
       this.rebuildOverlays(state.overlays, state.floor?.id);
       this.rebuildRoute(state.routePoints);
     }
@@ -648,9 +714,7 @@ function setSpaceEmissive(mesh: THREE.Object3D | null, color: number): void {
 }
 
 function disposeGroup(group: THREE.Group): void {
-  for (const child of [...group.children]) {
-    group.remove(child);
-    if (child instanceof THREE.Group) disposeGroup(child);
+  group.traverse((child) => {
     if (
       child instanceof THREE.Mesh ||
       child instanceof THREE.Line ||
@@ -661,5 +725,7 @@ function disposeGroup(group: THREE.Group): void {
       if (Array.isArray(material)) material.forEach((m) => m.dispose());
       else material.dispose();
     }
-  }
+    if (child instanceof THREE.SkinnedMesh) child.skeleton.dispose();
+  });
+  group.clear();
 }

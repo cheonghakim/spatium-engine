@@ -249,6 +249,68 @@ export function validatePOIs(floor: Floor): ValidationIssue[] {
   return issues;
 }
 
+export function validateFurniture(floor: Floor): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const spaceIds = new Set(floor.spaces.map((s) => s.id));
+
+  for (const item of floor.furniture) {
+    if (item.spaceId !== undefined && !spaceIds.has(item.spaceId)) {
+      issues.push(
+        issue(
+          "error",
+          "invalid-furniture",
+          `Furniture "${item.name ?? item.id}" references missing space "${item.spaceId}".`,
+          item.id,
+        ),
+      );
+    }
+  }
+
+  return issues;
+}
+
+/** Every id that currently exists on the floor, across every collection a Group can reference. */
+function allObjectIds(floor: Floor): Set<string> {
+  return new Set([
+    ...floor.spaces.map((s) => s.id),
+    ...floor.walls.map((w) => w.id),
+    ...floor.entrances.map((e) => e.id),
+    ...floor.pois.map((p) => p.id),
+    ...floor.furniture.map((f) => f.id),
+    ...floor.navigation.nodes.map((n) => n.id),
+    ...floor.navigation.edges.map((e) => e.id),
+  ]);
+}
+
+/**
+ * Flags a group referencing a member id that no longer exists on the floor —
+ * belt-and-suspenders on top of the delete-time cleanup in SelectTool's
+ * buildDeleteCommand (which strips a deleted member from every group's
+ * memberIds as part of the same undo step), catching drift from hand-edited
+ * or corrupted project files instead.
+ */
+export function validateGroups(floor: Floor): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const ids = allObjectIds(floor);
+
+  for (const group of floor.groups) {
+    for (const memberId of group.memberIds) {
+      if (!ids.has(memberId)) {
+        issues.push(
+          issue(
+            "warning",
+            "dangling-group-member",
+            `Group "${group.label}" references a missing object "${memberId}".`,
+            group.id,
+          ),
+        );
+      }
+    }
+  }
+
+  return issues;
+}
+
 /**
  * Validates one floor's navigation graph.
  *

@@ -1,12 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
   createFloor,
+  createGroup,
   createNavigationEdge,
   createNavigationNode,
+  createPOI,
   createSpace,
   createWall,
 } from "../factories.js";
-import { validateNavigation, validateSpaces, validateWalls } from "./rules.js";
+import { validateGroups, validateNavigation, validateSpaces, validateWalls } from "./rules.js";
+
+describe("validateGroups", () => {
+  it("returns no issues when every member still exists", () => {
+    const floor = createFloor("1F", 1);
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const wall = createWall(floor.id, { x: 0, y: 0 }, { x: 1, y: 0 });
+    floor.pois.push(poi);
+    floor.walls.push(wall);
+    floor.groups.push(createGroup(floor.id, "그룹", [poi.id, wall.id]));
+
+    expect(validateGroups(floor)).toEqual([]);
+  });
+
+  it("flags a member id that no longer resolves to any object on the floor", () => {
+    const floor = createFloor("1F", 1);
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    floor.pois.push(poi);
+    floor.groups.push(createGroup(floor.id, "그룹", [poi.id, "missing-id"]));
+
+    const issues = validateGroups(floor);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: "warning", type: "dangling-group-member" });
+  });
+});
 
 describe("validateWalls", () => {
   it("returns no issues for a well-formed wall", () => {

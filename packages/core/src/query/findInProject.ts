@@ -1,6 +1,7 @@
 import type { Floor, IndoorProject } from "../types/project.js";
 import type { Space } from "../types/space.js";
 import type { POI } from "../types/poi.js";
+import type { Furniture } from "../types/furniture.js";
 
 /** Finds a Space by id anywhere in the project, along with the floor it's on. */
 export function findSpaceInProject(
@@ -25,6 +26,20 @@ export function findPOIInProject(
     for (const floor of building.floors) {
       const poi = floor.pois.find((p) => p.id === poiId);
       if (poi) return { floor, poi };
+    }
+  }
+  return null;
+}
+
+/** Finds a Furniture item by id anywhere in the project, along with the floor it's on. */
+export function findFurnitureInProject(
+  project: IndoorProject,
+  furnitureId: string,
+): { floor: Floor; furniture: Furniture } | null {
+  for (const building of project.buildings) {
+    for (const floor of building.floors) {
+      const furniture = floor.furniture.find((f) => f.id === furnitureId);
+      if (furniture) return { floor, furniture };
     }
   }
   return null;

@@ -4,6 +4,8 @@ import {
   createEmptyProject,
   createEntrance,
   createFloor,
+  createFurniture,
+  createGroup,
   createNavigationEdge,
   createNavigationNode,
   createPOI,
@@ -18,6 +20,83 @@ import {
 } from "./serialize.js";
 
 describe("serializeProject / deserializeProject", () => {
+  it("round-trips furniture and backfills legacy floors", () => {
+    const project = createEmptyProject("Furniture");
+    const building = createBuilding("B");
+    const floor = createFloor("1F", 1);
+    project.buildings.push(building);
+    building.floors.push(floor);
+    floor.furniture.push({
+      ...createFurniture(floor.id, { x: 2, y: 3 }, "sofa"),
+      rotation: 90,
+      width: 2.4,
+    });
+    expect(deserializeProject(serializeProject(project))).toEqual(project);
+    const legacy = JSON.parse(serializeProject(project));
+    delete legacy.buildings[0].floors[0].furniture;
+    expect(deserializeProject(JSON.stringify(legacy)).buildings[0]!.floors[0]!.furniture).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    { type: "unknown" },
+    { type: "toString" },
+    { width: -1 },
+    { depth: 0 },
+    { height: "large" },
+    { rotation: null },
+    { type: "custom" },
+    { modelData: "https://example.com/model.glb" },
+    { modelData: "data:model/gltf-binary;base64,not base64" },
+  ])("rejects unsafe furniture data %j before rendering", (invalid) => {
+    const project = createEmptyProject("Furniture");
+    const building = createBuilding("B");
+    const floor = createFloor("1F", 1);
+    project.buildings.push(building);
+    building.floors.push(floor);
+    const data = { ...createFurniture(floor.id, { x: 0, y: 0 }), ...invalid };
+    const json = JSON.stringify(project).replace(
+      '"furniture":[]',
+      `"furniture":[${JSON.stringify(data)}]`,
+    );
+    expect(() => deserializeProject(json)).toThrow(InvalidProjectDataError);
+  });
+  it("round-trips groups and backfills legacy floors", () => {
+    const project = createEmptyProject("Groups");
+    const building = createBuilding("B");
+    const floor = createFloor("1F", 1);
+    project.buildings.push(building);
+    building.floors.push(floor);
+    const poi = createPOI(floor.id, { x: 0, y: 0 });
+    const item = createFurniture(floor.id, { x: 1, y: 1 });
+    floor.pois.push(poi);
+    floor.furniture.push(item);
+    floor.groups.push(createGroup(floor.id, "직원 데스크", [poi.id, item.id]));
+
+    expect(deserializeProject(serializeProject(project))).toEqual(project);
+    const legacy = JSON.parse(serializeProject(project));
+    delete legacy.buildings[0].floors[0].groups;
+    expect(deserializeProject(JSON.stringify(legacy)).buildings[0]!.floors[0]!.groups).toEqual([]);
+  });
+
+  it.each([{ label: 1 }, { memberIds: "a" }, { memberIds: [1, 2] }])(
+    "rejects unsafe group data %j",
+    (invalid) => {
+      const project = createEmptyProject("Groups");
+      const building = createBuilding("B");
+      const floor = createFloor("1F", 1);
+      project.buildings.push(building);
+      building.floors.push(floor);
+      const data = { ...createGroup(floor.id, "그룹", ["a", "b"]), ...invalid };
+      const json = JSON.stringify(project).replace(
+        '"groups":[]',
+        `"groups":[${JSON.stringify(data)}]`,
+      );
+      expect(() => deserializeProject(json)).toThrow(InvalidProjectDataError);
+    },
+  );
+
   it("round-trips a project through JSON", () => {
     const project = createEmptyProject("Test Mall");
     const json = serializeProject(project);

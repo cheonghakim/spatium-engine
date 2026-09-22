@@ -34,8 +34,14 @@ const previewFloor = computed(() =>
 );
 const spaceCount = computed(() => previewFloor.value?.spaces.length ?? 0);
 const wallCount = computed(() => previewFloor.value?.walls.length ?? 0);
+const furnitureCount = computed(() => previewFloor.value?.furniture.length ?? 0);
 const isEmpty = computed(
-  () => spaceCount.value === 0 && wallCount.value === 0 && !previewFloor.value?.entrances.length,
+  () =>
+    spaceCount.value === 0 &&
+    wallCount.value === 0 &&
+    !previewFloor.value?.entrances.length &&
+    !previewFloor.value?.pois.length &&
+    !previewFloor.value?.furniture.length,
 );
 const hasDraft = computed(() => {
   revision.value;
@@ -135,12 +141,12 @@ onBeforeUnmount(() => {
       <button @click="refresh">다시 시도</button>
     </div>
     <div v-else-if="isEmpty" class="empty-overlay">
-      <p>이 층에 3D로 표시할 벽이나 공간이 없습니다.</p>
+      <p>이 층에 3D로 표시할 요소가 없습니다.</p>
       <p class="hint">
         {{
           hasDraft
             ? "검토 탭에서 포함할 벽이나 방을 선택하세요. 제외한 항목은 미리보기에 표시되지 않습니다."
-            : "자동 벡터화를 실행하거나 공간·벽 도구로 지도를 그려 주세요. 도면 이미지만으로는 3D 모델이 표시되지 않습니다."
+            : "공간·벽·출입구·가구를 추가하거나 자동 벡터화를 실행해 주세요. 도면 이미지만으로는 3D 모델이 표시되지 않습니다."
         }}
       </p>
     </div>
@@ -148,8 +154,8 @@ onBeforeUnmount(() => {
       <strong>{{
         hasDraft ? "검토용 초안 포함 · 아직 확정되지 않았습니다" : "확정된 지도"
       }}</strong>
-      <span>벽 {{ wallCount }}개 · 공간 {{ spaceCount }}개</span>
-      <span v-if="spaceCount === 0">벽만 표시 중입니다. 공간을 추가하면 바닥도 표시됩니다.</span>
+      <span>벽 {{ wallCount }}개 · 공간 {{ spaceCount }}개 · 가구 {{ furnitureCount }}개</span>
+      <span v-if="spaceCount === 0">공간을 추가하면 바닥도 표시됩니다.</span>
     </div>
     <div v-if="!loading && !error && !isEmpty" class="view-controls">
       <span>드래그: 회전 · 휠: 확대·축소</span>

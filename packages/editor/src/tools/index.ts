@@ -9,6 +9,8 @@ export { WallTool } from "./WallTool.js";
 export { CalibrateTool } from "./CalibrateTool.js";
 export { DoorTool } from "./DoorTool.js";
 export { POITool } from "./POITool.js";
+export { FurnitureTool } from "./FurnitureTool.js";
+export type { FurnitureTemplate } from "./FurnitureTool.js";
 export { NavigationNodeTool } from "./NavigationNodeTool.js";
 export { NavigationEdgeTool } from "./NavigationEdgeTool.js";
 export { NavigationTool } from "./NavigationTool.js";

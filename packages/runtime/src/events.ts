@@ -1,4 +1,4 @@
-import type { IndoorProject, POI, Space } from "@indoor/core";
+import type { Furniture, IndoorProject, POI, Space } from "@indoor/core";
 import type { CameraMode } from "./IndoorRuntime.js";
 import type { RuntimeCameraState } from "./camera/RuntimeCamera.js";
 
@@ -7,6 +7,7 @@ export interface RuntimeEventMap {
   "poi.click": { poi: POI };
   /** Fires with the POI being hovered, and again with null when the pointer leaves it. */
   "poi.hover": { poi: POI | null };
+  "furniture.click": { furniture: Furniture };
   "space.click": { space: Space };
   "marker.click": { markerId: string };
   "floor.changed": { floorId: string };

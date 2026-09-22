@@ -4,6 +4,8 @@ export {
   validateSpaces,
   validateEntrances,
   validatePOIs,
+  validateFurniture,
+  validateGroups,
   validateNavigation,
   validateWalls,
 } from "./rules.js";

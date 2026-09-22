@@ -23,6 +23,7 @@ const DEFAULT_COLORS = {
   wall: "#4a4a52",
   entrance: "#3ddc84",
   poi: "#ff5c8a",
+  furniture: "#b68b60",
   accent: "#ffb03c",
 };
 
@@ -34,6 +35,7 @@ function resolveColors(theme: RuntimeTheme | undefined) {
     wall: DEFAULT_COLORS.wall,
     entrance: DEFAULT_COLORS.entrance,
     poi: DEFAULT_COLORS.poi,
+    furniture: DEFAULT_COLORS.furniture,
     accent: theme?.accentColor ?? DEFAULT_COLORS.accent,
   };
 }
@@ -81,6 +83,17 @@ export function render2d(ctx: CanvasRenderingContext2D, state: Render2DState): v
         poi.position,
         hovered ? colors.accent : colors.poi,
         hovered ? 8 : 6,
+      );
+    }
+
+    for (const item of state.floor.furniture) {
+      const hovered = item.id === state.hoveredId;
+      drawDot(
+        ctx,
+        state.camera,
+        item.position,
+        hovered ? colors.accent : colors.furniture,
+        hovered ? 7 : 5,
       );
     }
   }

@@ -16,7 +16,9 @@ const HIT_RADIUS_PX = 12;
  * can be drawn with repeated clicks. Click an existing node to set it
  * pending (or, with a pending node already set, connect to it and make the
  * clicked node the new pending node, continuing the chain). Click the
- * pending node again to cancel it. Escape also cancels.
+ * pending node again to cancel it. Escape also cancels. Holding Shift while
+ * placing a new node constrains it horizontally/vertically relative to the
+ * pending node, matching WallTool's Shift convention.
  *
  * NavigationNodeTool/NavigationEdgeTool remain separately registered and
  * unchanged for API/back-compat — this tool only adds a friendlier combined
@@ -80,7 +82,16 @@ export class NavigationTool implements EditorTool {
       return;
     }
 
-    const point = this.context.snapping.resolve(event.worldPoint, { floor });
+    let point = this.context.snapping.resolve(event.worldPoint, { floor });
+    if (event.shiftKey && this.fromNodeId) {
+      const anchor = floor.navigation.nodes.find((n) => n.id === this.fromNodeId)?.position;
+      if (anchor) {
+        point =
+          Math.abs(point.x - anchor.x) > Math.abs(point.y - anchor.y)
+            ? { x: point.x, y: anchor.y }
+            : { x: anchor.x, y: point.y };
+      }
+    }
     const node = createNavigationNode(
       floor.id,
       point,

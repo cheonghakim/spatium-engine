@@ -6,6 +6,8 @@ import type { Space, SpaceType } from "./types/space.js";
 import type { Wall } from "./types/wall.js";
 import type { Entrance, EntranceType } from "./types/entrance.js";
 import type { POI, POIType } from "./types/poi.js";
+import type { Furniture, FurnitureType } from "./types/furniture.js";
+import type { Group } from "./types/group.js";
 import type {
   NavigationEdge,
   NavigationEdgeType,
@@ -40,6 +42,8 @@ export function createFloor(name: string, level: number, elevation = 0): Floor {
     walls: [],
     entrances: [],
     pois: [],
+    furniture: [],
+    groups: [],
     navigation: { nodes: [], edges: [] },
   };
 }
@@ -90,6 +94,30 @@ export function createPOI(
     position,
     type,
     name,
+  };
+}
+
+export function createFurniture(
+  floorId: string,
+  position: Point,
+  type: FurnitureType = "desk",
+  name?: string,
+): Furniture {
+  return {
+    id: createId(),
+    floorId,
+    position,
+    type,
+    ...(name !== undefined ? { name } : {}),
+  };
+}
+
+export function createGroup(floorId: string, label: string, memberIds: string[]): Group {
+  return {
+    id: createId(),
+    floorId,
+    label,
+    memberIds,
   };
 }
 

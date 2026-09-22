@@ -13,6 +13,8 @@ export {
   createWall,
   createEntrance,
   createPOI,
+  createFurniture,
+  createGroup,
   createNavigationNode,
   createNavigationEdge,
 } from "./factories.js";

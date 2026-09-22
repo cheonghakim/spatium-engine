@@ -57,6 +57,7 @@ function adjust(direction: 1 | -1): void {
       </button>
       <input
         type="number"
+        :aria-label="label"
         :value="modelValue"
         :min="min"
         :max="max"

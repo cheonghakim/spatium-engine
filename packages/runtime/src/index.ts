@@ -9,6 +9,7 @@ export type { HitResult } from "./hitTest.js";
 export { render2d } from "./render/render2d.js";
 export type { Render2DState } from "./render/render2d.js";
 export { Renderer3D } from "./render/Renderer3D.js";
+export { importFurnitureGLB } from "./render/importedFurniture.js";
 export type {
   Renderer3DCallbacks,
   Renderer3DState,

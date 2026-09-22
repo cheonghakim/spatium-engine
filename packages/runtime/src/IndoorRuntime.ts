@@ -305,6 +305,8 @@ export class IndoorRuntime {
 
     if (hit.kind === "marker") this.emitter.emit("marker.click", { markerId: hit.overlay.id });
     else if (hit.kind === "poi") this.emitter.emit("poi.click", { poi: hit.poi });
+    else if (hit.kind === "furniture")
+      this.emitter.emit("furniture.click", { furniture: hit.item });
     else this.emitter.emit("space.click", { space: hit.space });
   };
 

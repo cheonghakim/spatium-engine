@@ -1,4 +1,5 @@
 import {
+  createGroup,
   createNavigationEdge,
   distance,
   type Building,
@@ -12,12 +13,16 @@ import type { Command } from "./commands/Command.js";
 import { AddSpaceCommand } from "./commands/SpaceCommands.js";
 import { AddEntranceCommand } from "./commands/EntranceCommands.js";
 import { AddWallCommand } from "./commands/WallCommands.js";
+import { AddGroupCommand, DeleteGroupCommand } from "./commands/GroupCommands.js";
 import {
   AddNavigationEdgeCommand,
   DeleteNavigationEdgeCommand,
 } from "./commands/NavigationCommands.js";
+import { DeleteVertexCommand } from "./commands/VertexCommands.js";
+import { buildDeleteCommand, stripFromGroups } from "./commands/buildDeleteCommand.js";
 import { CompoundCommand } from "./commands/CompoundCommand.js";
 import { ClearFloorCommand } from "./commands/ClearFloorCommand.js";
+import { findObjectKind } from "./selection/findObjectKind.js";
 import { DraftReviewTool } from "./tools/DraftReviewTool.js";
 import { EditorCamera } from "./camera/EditorCamera.js";
 import { DraftManager } from "./draft/DraftManager.js";
@@ -40,6 +45,7 @@ import { WallTool } from "./tools/WallTool.js";
 import { CalibrateTool } from "./tools/CalibrateTool.js";
 import { DoorTool } from "./tools/DoorTool.js";
 import { POITool } from "./tools/POITool.js";
+import { FurnitureTool } from "./tools/FurnitureTool.js";
 import { NavigationNodeTool } from "./tools/NavigationNodeTool.js";
 import { NavigationEdgeTool } from "./tools/NavigationEdgeTool.js";
 import { NavigationTool } from "./tools/NavigationTool.js";
@@ -94,6 +100,7 @@ export class IndoorEditor {
   readonly layers: LayerVisibilityManager;
   readonly routePreview: RoutePreviewManager;
   readonly tools: ToolManager;
+  readonly furnitureTool: FurnitureTool;
 
   private readonly emitter = new EventEmitter<IndoorEditorEvents>();
   private activeFloorId: string | null = null;
@@ -150,6 +157,8 @@ export class IndoorEditor {
     this.tools.register(new WallTool(toolContext));
     this.tools.register(new DoorTool(toolContext));
     this.tools.register(new POITool(toolContext));
+    this.furnitureTool = new FurnitureTool(toolContext);
+    this.tools.register(this.furnitureTool);
     this.tools.register(new NavigationNodeTool(toolContext));
     this.tools.register(new NavigationEdgeTool(toolContext));
     this.tools.register(new NavigationTool(toolContext));
@@ -416,6 +425,8 @@ export class IndoorEditor {
       !floor.walls.length &&
       !floor.entrances.length &&
       !floor.pois.length &&
+      !floor.furniture.length &&
+      !floor.groups.length &&
       !floor.navigation.nodes.length &&
       !floor.navigation.edges.length;
     if (isEmpty) return;
@@ -438,6 +449,87 @@ export class IndoorEditor {
     this.executeCommand(
       commands.length > 1 ? new CompoundCommand("Clear Floor", commands) : commands[0]!,
     );
+  }
+
+  /**
+   * Bundles the current selection (2+ non-vertex entries) into a new named
+   * Group and selects it. Ids already belonging to another group, or that
+   * are themselves a group, are excluded — groups don't nest (v1). A no-op
+   * if fewer than 2 groupable ids remain after that filtering.
+   */
+  groupSelection(label = "그룹"): void {
+    const floor = this.getActiveFloor();
+    if (!floor) return;
+    const groupIds = new Set(floor.groups.map((g) => g.id));
+    const alreadyGrouped = new Set(floor.groups.flatMap((g) => g.memberIds));
+    const memberIds = [
+      ...new Set(
+        this.selection.current
+          .filter((entry) => entry.vertexIndex === undefined)
+          .map((entry) => entry.id)
+          .filter((id) => !groupIds.has(id) && !alreadyGrouped.has(id)),
+      ),
+    ];
+    if (memberIds.length < 2) return;
+
+    const group = createGroup(floor.id, label, memberIds);
+    this.executeCommand(new AddGroupCommand(floor, group));
+    this.selection.select(group.id);
+  }
+
+  /** Dissolves the currently selected group (only) and re-selects its former members. A no-op unless the selection is exactly one group. */
+  ungroupSelection(): void {
+    const floor = this.getActiveFloor();
+    if (!floor) return;
+    const entries = this.selection.current;
+    if (entries.length !== 1) return;
+    const group = floor.groups.find((g) => g.id === entries[0]?.id);
+    if (!group) return;
+
+    this.executeCommand(new DeleteGroupCommand(floor, group.id));
+    this.selection.clear();
+    for (const memberId of group.memberIds) this.selection.add(memberId);
+  }
+
+  /**
+   * Deletes whatever is currently selected — the same operation SelectTool
+   * runs for the Delete/Backspace key, exposed here so a host UI can offer
+   * an explicit delete button (e.g. in a property panel) instead of relying
+   * on the keyboard shortcut alone. A no-op if nothing is selected.
+   */
+  deleteSelection(): void {
+    this.tools.active?.deactivate();
+    this.tools.active?.activate();
+
+    const floor = this.getActiveFloor();
+    if (!floor) return;
+    const entry = this.selection.current[0];
+    if (!entry) return;
+
+    if (entry.vertexIndex !== undefined) {
+      const space = floor.spaces.find((s) => s.id === entry.id);
+      if (space && space.polygon.length > 3) {
+        this.executeCommand(new DeleteVertexCommand(space, entry.vertexIndex));
+        this.selection.select(space.id);
+      }
+      return;
+    }
+
+    const kind = findObjectKind(floor, entry.id);
+    if (!kind) return;
+    const commands: Command[] = [
+      buildDeleteCommand(
+        floor,
+        entry.id,
+        kind,
+        (nodeId) => this.findNodeLocation(nodeId)?.building.floors,
+      ),
+    ];
+    if (kind !== "group") commands.push(...stripFromGroups(floor, entry.id));
+    this.executeCommand(
+      commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!,
+    );
+    this.selection.clear();
   }
 
   /** Finds which building/floor a navigation node belongs to, optionally restricted to one building. */

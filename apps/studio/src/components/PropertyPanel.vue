@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
+  FURNITURE_PRESETS,
   validateProject,
   type Building,
   type Entrance,
   type EntranceType,
+  type Furniture,
+  type FurnitureType,
+  type Group,
   type NavigationEdge,
   type NavigationEdgeType,
   type NavigationNode,
@@ -24,6 +28,10 @@ import {
   mdiMapMarkerOutline,
   mdiShieldAlertOutline,
   mdiShieldCheckOutline,
+  mdiSofaOutline,
+  mdiTrashCanOutline,
+  mdiUngroup,
+  mdiVectorCombine,
   mdiVectorLine,
   mdiVectorPoint,
   mdiVectorSquare,
@@ -281,6 +289,8 @@ type Selected =
   | { kind: "wall"; wall: Wall }
   | { kind: "entrance"; entrance: Entrance }
   | { kind: "poi"; poi: POI }
+  | { kind: "furniture"; furniture: Furniture }
+  | { kind: "group"; group: Group }
   | { kind: "navigationNode"; node: NavigationNode }
   | { kind: "navigationEdge"; edge: NavigationEdge }
   | { kind: "vertex"; space: Space; vertexIndex: number }
@@ -315,6 +325,14 @@ const selected = computed<Selected>(() => {
     const poi = floor.pois.find((p) => p.id === entry.id);
     return poi ? { kind, poi } : null;
   }
+  if (kind === "furniture") {
+    const furniture = floor.furniture.find((f) => f.id === entry.id);
+    return furniture ? { kind, furniture } : null;
+  }
+  if (kind === "group") {
+    const group = floor.groups.find((g) => g.id === entry.id);
+    return group ? { kind, group } : null;
+  }
   if (kind === "navigationNode") {
     const node = floor.navigation.nodes.find((n) => n.id === entry.id);
     return node ? { kind, node } : null;
@@ -331,6 +349,8 @@ const SELECTION_META: Record<NonNullable<Selected>["kind"], { icon: string; labe
   wall: { icon: mdiWall, label: "벽" },
   entrance: { icon: mdiDoorOpen, label: "출입구" },
   poi: { icon: mdiMapMarkerOutline, label: "관심 지점" },
+  furniture: { icon: mdiSofaOutline, label: "가구" },
+  group: { icon: mdiVectorCombine, label: "그룹" },
   navigationNode: { icon: mdiCircleMedium, label: "내비게이션 노드" },
   navigationEdge: { icon: mdiVectorLine, label: "내비게이션 경로" },
   vertex: { icon: mdiVectorPoint, label: "정점" },
@@ -349,6 +369,10 @@ function objectId(): string {
       return sel.entrance.id.slice(0, 8);
     case "poi":
       return sel.poi.id.slice(0, 8);
+    case "furniture":
+      return sel.furniture.id.slice(0, 8);
+    case "group":
+      return sel.group.id.slice(0, 8);
     case "navigationNode":
       return sel.node.id.slice(0, 8);
     case "navigationEdge":
@@ -415,6 +439,73 @@ function onPoiType(evt: Event): void {
   if (selected.value?.kind !== "poi") return;
   commitField(selected.value.poi, "type", (evt.target as HTMLSelectElement).value as POIType);
 }
+
+const FURNITURE_TYPES = (Object.keys(FURNITURE_PRESETS) as FurnitureType[]).filter(
+  (type) => type !== "custom",
+);
+
+function onFurnitureName(evt: Event): void {
+  if (selected.value?.kind !== "furniture") return;
+  commitField(
+    selected.value.furniture,
+    "name",
+    (evt.target as HTMLInputElement).value || undefined,
+  );
+}
+function onFurnitureType(evt: Event): void {
+  if (selected.value?.kind !== "furniture") return;
+  commitField(
+    selected.value.furniture,
+    "type",
+    (evt.target as HTMLSelectElement).value as FurnitureType,
+  );
+}
+function onFurniturePosition(axis: "x" | "y", value: number): void {
+  if (selected.value?.kind !== "furniture") return;
+  commitField(selected.value.furniture, "position", {
+    ...selected.value.furniture.position,
+    [axis]: value,
+  });
+}
+function onFurnitureDimension(key: "width" | "depth" | "height", value: number): void {
+  if (selected.value?.kind !== "furniture") return;
+  commitField(selected.value.furniture, key, value);
+}
+function onFurnitureRotation(value: number): void {
+  if (selected.value?.kind !== "furniture") return;
+  commitField(selected.value.furniture, "rotation", value);
+}
+
+function onGroupLabel(evt: Event): void {
+  if (selected.value?.kind !== "group") return;
+  const label = (evt.target as HTMLInputElement).value.trim();
+  if (label) commitField(selected.value.group, "label", label);
+}
+function ungroupSelectedGroup(): void {
+  props.editor.ungroupSelection();
+}
+function deleteSelected(): void {
+  props.editor.deleteSelection();
+}
+
+/** A short, human-readable summary per member — falls back to the kind label when the object has no name of its own (walls, edges) or was deleted without the group being cleaned up yet. */
+const groupMembers = computed(() => {
+  revision.value;
+  if (selected.value?.kind !== "group") return [];
+  const floor = props.editor.getActiveFloor();
+  if (!floor) return [];
+  return selected.value.group.memberIds.map((id) => {
+    const kind = findObjectKind(floor, id);
+    if (!kind || kind === "group") return { id, icon: mdiVectorPoint, label: "(삭제됨)" };
+    const meta = SELECTION_META[kind];
+    const name =
+      floor.spaces.find((s) => s.id === id)?.properties.name ??
+      floor.pois.find((p) => p.id === id)?.name ??
+      floor.furniture.find((f) => f.id === id)?.name ??
+      floor.navigation.nodes.find((n) => n.id === id)?.name;
+    return { id, icon: meta.icon, label: name ?? meta.label };
+  });
+});
 
 function onNavNodeType(evt: Event): void {
   if (selected.value?.kind !== "navigationNode") return;
@@ -509,6 +600,7 @@ const floorStats = computed(() => {
     walls: floor.walls.length,
     entrances: floor.entrances.length,
     pois: floor.pois.length,
+    furniture: floor.furniture.length,
     navNodes: floor.navigation.nodes.length,
   };
 });
@@ -560,6 +652,10 @@ const lastSavedLabel = computed(() => {
           <div class="stat">
             <dt>POI</dt>
             <dd>{{ floorStats.pois }}</dd>
+          </div>
+          <div class="stat">
+            <dt>가구</dt>
+            <dd>{{ floorStats.furniture }}</dd>
           </div>
           <div class="stat">
             <dt>노드</dt>
@@ -615,6 +711,14 @@ const lastSavedLabel = computed(() => {
         <span class="autosave-note" title="변경 사항은 즉시 적용되고 자동 저장됩니다"
           >즉시 적용</span
         >
+        <button
+          class="btn-ghost btn-icon danger-ghost delete-selection-button"
+          title="선택 항목 삭제 (Delete)"
+          aria-label="선택 항목 삭제"
+          @click="deleteSelected"
+        >
+          <MdiIcon :path="mdiTrashCanOutline" :size="15" />
+        </button>
       </div>
 
       <template v-if="selected.kind === 'space'">
@@ -784,6 +888,112 @@ const lastSavedLabel = computed(() => {
         </PropertyGroup>
       </template>
 
+      <template v-else-if="selected.kind === 'furniture'">
+        <PropertyGroup title="기본 정보">
+          <label class="field">
+            <span class="field-label">이름</span>
+            <input
+              type="text"
+              placeholder="예: 책상 1"
+              :value="selected.furniture.name ?? ''"
+              @change="onFurnitureName"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">타입</span>
+            <select
+              :value="selected.furniture.type"
+              :disabled="!!selected.furniture.modelData"
+              @change="onFurnitureType"
+            >
+              <option v-if="selected.furniture.type === 'custom'" value="custom">
+                사용자 모델 (GLB)
+              </option>
+              <option v-for="type in FURNITURE_TYPES" :key="type" :value="type">
+                {{ FURNITURE_PRESETS[type].label }}
+              </option>
+            </select>
+          </label>
+        </PropertyGroup>
+        <PropertyGroup title="위치 및 크기">
+          <NumberField
+            v-for="axis in ['x', 'y'] as const"
+            :key="axis"
+            :label="`위치 ${axis}`"
+            unit="m"
+            :step="0.1"
+            :model-value="selected.furniture.position[axis]"
+            @change="onFurniturePosition(axis, $event)"
+          />
+          <NumberField
+            label="폭"
+            unit="m"
+            :min="0.1"
+            :step="0.1"
+            :model-value="
+              selected.furniture.width ?? FURNITURE_PRESETS[selected.furniture.type].width
+            "
+            @change="onFurnitureDimension('width', $event)"
+          />
+          <NumberField
+            label="깊이"
+            unit="m"
+            :min="0.1"
+            :step="0.1"
+            :model-value="
+              selected.furniture.depth ?? FURNITURE_PRESETS[selected.furniture.type].depth
+            "
+            @change="onFurnitureDimension('depth', $event)"
+          />
+          <NumberField
+            label="높이"
+            unit="m"
+            :min="0.1"
+            :step="0.1"
+            :model-value="
+              selected.furniture.height ?? FURNITURE_PRESETS[selected.furniture.type].height
+            "
+            @change="onFurnitureDimension('height', $event)"
+          />
+          <NumberField
+            label="회전"
+            unit="°"
+            :step="15"
+            :model-value="selected.furniture.rotation ?? 0"
+            @change="onFurnitureRotation"
+          />
+        </PropertyGroup>
+        <PropertyGroup title="연결 및 네비게이션">
+          <p class="readonly-field">소속 공간: {{ spaceName(selected.furniture.spaceId) }}</p>
+        </PropertyGroup>
+      </template>
+
+      <template v-else-if="selected.kind === 'group'">
+        <PropertyGroup title="기본 정보">
+          <label class="field">
+            <span class="field-label">이름</span>
+            <input type="text" :value="selected.group.label" @change="onGroupLabel" />
+          </label>
+        </PropertyGroup>
+        <PropertyGroup title="구성 요소">
+          <p class="readonly-field">{{ groupMembers.length }}개 객체</p>
+          <ul class="member-list">
+            <li v-for="member in groupMembers" :key="member.id" class="member-row">
+              <MdiIcon :path="member.icon" :size="14" />
+              <span class="member-label">{{ member.label }}</span>
+            </li>
+          </ul>
+          <button class="ungroup-button" @click="ungroupSelectedGroup">
+            <MdiIcon :path="mdiUngroup" :size="14" />
+            그룹 해제 (구성 요소 유지)
+          </button>
+          <p class="hint">
+            캔버스에서 아무 구성 요소를 클릭해도 그룹 전체가 선택됩니다. Delete 키는 그룹과 모든
+            구성 요소를 함께 삭제합니다.
+          </p>
+        </PropertyGroup>
+      </template>
+
       <template v-else-if="selected.kind === 'navigationNode'">
         <PropertyGroup title="기본 정보">
           <label class="field">
@@ -938,6 +1148,14 @@ const lastSavedLabel = computed(() => {
   color: var(--text-disabled);
   white-space: nowrap;
 }
+.delete-selection-button {
+  flex-shrink: 0;
+}
+.danger-ghost:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
 
 .summary-card {
   padding: var(--space-3);
@@ -1000,6 +1218,37 @@ const lastSavedLabel = computed(() => {
 .tag.warning {
   background: var(--warning-soft);
   color: var(--warning);
+}
+
+.member-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.member-row:hover {
+  background: var(--surface-2);
+}
+.member-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ungroup-button {
+  width: 100%;
 }
 
 .stat-grid {

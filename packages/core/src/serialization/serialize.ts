@@ -1,5 +1,6 @@
 import type { IndoorProject } from "../types/project.js";
 import { CURRENT_SCHEMA_VERSION } from "./schemaVersion.js";
+import { FURNITURE_PRESETS, isModelData } from "../types/furniture.js";
 
 export class SchemaVersionMismatchError extends Error {
   constructor(
@@ -129,6 +130,56 @@ function assertValidPOIShape(poi: unknown, index: number, floorId: unknown): voi
   }
 }
 
+function assertValidFurnitureShape(item: unknown, index: number, floorId: unknown): void {
+  if (!isPlainObject(item) || typeof item.id !== "string") {
+    throw new InvalidProjectDataError(
+      `Furniture at index ${index} on floor "${floorId}" must be an object with an "id" string.`,
+    );
+  }
+  if (typeof item.type !== "string" || !Object.hasOwn(FURNITURE_PRESETS, item.type)) {
+    throw new InvalidProjectDataError(
+      `Furniture at index ${index} on floor "${floorId}" must have a supported "type".`,
+    );
+  }
+  if (!isPointLike(item.position)) {
+    throw new InvalidProjectDataError(
+      `Furniture at index ${index} on floor "${floorId}" must have a "position" with numeric x/y.`,
+    );
+  }
+  if ((item.type === "custom" || item.modelData !== undefined) && !isModelData(item.modelData)) {
+    throw new InvalidProjectDataError(`Furniture at index ${index} has invalid embedded GLB data.`);
+  }
+  for (const key of ["width", "depth", "height", "rotation"] as const) {
+    const value = item[key];
+    if (
+      value !== undefined &&
+      (typeof value !== "number" || !Number.isFinite(value) || (key !== "rotation" && value <= 0))
+    ) {
+      throw new InvalidProjectDataError(
+        `Furniture at index ${index} on floor "${floorId}" has an invalid "${key}".`,
+      );
+    }
+  }
+}
+
+function assertValidGroupShape(group: unknown, index: number, floorId: unknown): void {
+  if (!isPlainObject(group) || typeof group.id !== "string") {
+    throw new InvalidProjectDataError(
+      `Group at index ${index} on floor "${floorId}" must be an object with an "id" string.`,
+    );
+  }
+  if (typeof group.label !== "string") {
+    throw new InvalidProjectDataError(
+      `Group at index ${index} on floor "${floorId}" must have a "label" string.`,
+    );
+  }
+  if (!Array.isArray(group.memberIds) || group.memberIds.some((m) => typeof m !== "string")) {
+    throw new InvalidProjectDataError(
+      `Group at index ${index} on floor "${floorId}" must have a "memberIds" array of strings.`,
+    );
+  }
+}
+
 function assertValidNavigationNodeShape(node: unknown, index: number, floorId: unknown): void {
   if (!isPlainObject(node) || typeof node.id !== "string") {
     throw new InvalidProjectDataError(
@@ -187,6 +238,30 @@ function assertValidFloorShape(floor: unknown): void {
     assertValidEntranceShape(entrance, i, floorId),
   );
   (floor.pois as unknown[]).forEach((poi, i) => assertValidPOIShape(poi, i, floorId));
+
+  // Furniture is deliberately NOT in FLOOR_ARRAY_FIELDS: it was added after
+  // the current schema version, so projects saved before it exist have no
+  // "furniture" key at all. Validate it only when present; deserializeProject
+  // backfills a missing array to `[]` once the shape check passes, so this
+  // stays a purely additive, backward-compatible field.
+  if (floor.furniture !== undefined) {
+    if (!Array.isArray(floor.furniture)) {
+      throw new InvalidProjectDataError(
+        `Each floor's "furniture", when present, must be an array.`,
+      );
+    }
+    (floor.furniture as unknown[]).forEach((item, i) =>
+      assertValidFurnitureShape(item, i, floorId),
+    );
+  }
+
+  // Same backward-compat story as `furniture` above.
+  if (floor.groups !== undefined) {
+    if (!Array.isArray(floor.groups)) {
+      throw new InvalidProjectDataError(`Each floor's "groups", when present, must be an array.`);
+    }
+    (floor.groups as unknown[]).forEach((group, i) => assertValidGroupShape(group, i, floorId));
+  }
 
   const { navigation } = floor;
   if (!isPlainObject(navigation)) {
@@ -257,6 +332,15 @@ export function deserializeProject(json: string): IndoorProject {
   assertValidProjectShape(data);
   if (data.schemaVersion !== CURRENT_SCHEMA_VERSION) {
     throw new SchemaVersionMismatchError(data.schemaVersion, CURRENT_SCHEMA_VERSION);
+  }
+  // Backfill floors saved before `furniture` existed so every consumer can
+  // treat Floor.furniture as always present, without bumping the schema
+  // version for what is otherwise a purely additive field.
+  for (const building of data.buildings) {
+    for (const floor of building.floors) {
+      if (floor.furniture === undefined) floor.furniture = [];
+      if (floor.groups === undefined) floor.groups = [];
+    }
   }
   return data;
 }

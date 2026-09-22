@@ -65,7 +65,10 @@ export function projectToGeoJSON(project: IndoorProject): GeoJSONFeatureCollecti
       for (const wall of floor.walls) {
         features.push({
           type: "Feature",
-          geometry: { type: "LineString", coordinates: [toPosition(wall.start), toPosition(wall.end)] },
+          geometry: {
+            type: "LineString",
+            coordinates: [toPosition(wall.start), toPosition(wall.end)],
+          },
           properties: {
             kind: "wall",
             id: wall.id,
@@ -119,6 +122,26 @@ export function projectToGeoJSON(project: IndoorProject): GeoJSONFeatureCollecti
         });
       }
 
+      for (const item of floor.furniture) {
+        features.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: toPosition(item.position) },
+          properties: {
+            kind: "furniture",
+            id: item.id,
+            furnitureType: item.type,
+            name: item.name,
+            spaceId: item.spaceId,
+            width: item.width,
+            depth: item.depth,
+            height: item.height,
+            rotation: item.rotation,
+            floorId: floor.id,
+            buildingId: building.id,
+          },
+        });
+      }
+
       for (const node of floor.navigation.nodes) {
         features.push({
           type: "Feature",
@@ -140,7 +163,10 @@ export function projectToGeoJSON(project: IndoorProject): GeoJSONFeatureCollecti
         if (!from || !to) continue;
         features.push({
           type: "Feature",
-          geometry: { type: "LineString", coordinates: [toPosition(from.position), toPosition(to.position)] },
+          geometry: {
+            type: "LineString",
+            coordinates: [toPosition(from.position), toPosition(to.position)],
+          },
           properties: {
             kind: "navigationEdge",
             id: edge.id,

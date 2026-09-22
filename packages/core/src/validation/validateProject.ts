@@ -3,6 +3,8 @@ import type { Building, IndoorProject } from "../types/project.js";
 import type { ValidationIssue } from "./types.js";
 import {
   validateEntrances,
+  validateFurniture,
+  validateGroups,
   validatePOIs,
   validateNavigation,
   validateSpaces,
@@ -64,6 +66,8 @@ export function validateProject(project: IndoorProject): ValidationIssue[] {
       issues.push(...validateWalls(floor));
       issues.push(...validateEntrances(floor));
       issues.push(...validatePOIs(floor));
+      issues.push(...validateFurniture(floor));
+      issues.push(...validateGroups(floor));
       issues.push(...validateNavigation(floor, buildingNodes, buildingEdges));
     }
     issues.push(...validateFloorConnections(building));

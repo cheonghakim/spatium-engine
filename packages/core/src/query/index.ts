@@ -1,1 +1,1 @@
-export { findSpaceInProject, findPOIInProject } from "./findInProject.js";
+export { findSpaceInProject, findPOIInProject, findFurnitureInProject } from "./findInProject.js";

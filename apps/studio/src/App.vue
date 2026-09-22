@@ -36,15 +36,19 @@ import {
   mdiRoutes,
   mdiRulerSquareCompass,
   mdiShapePolygonPlus,
+  mdiSofaOutline,
   mdiTrayArrowDown,
   mdiTuneVariant,
   mdiUndo,
+  mdiUngroup,
+  mdiVectorCombine,
   mdiWall,
 } from "@mdi/js";
 import MdiIcon from "./components/MdiIcon.vue";
 import StudioCanvas from "./components/StudioCanvas.vue";
 import Preview3D from "./components/Preview3D.vue";
 import LayersPanel from "./components/LayersPanel.vue";
+import FurnitureLibrary from "./components/FurnitureLibrary.vue";
 import ReferencePanel from "./components/ReferencePanel.vue";
 import VectorizePanel from "./components/VectorizePanel.vue";
 import PropertyPanel from "./components/PropertyPanel.vue";
@@ -165,6 +169,7 @@ function hasUnsavedContent(): boolean {
         f.walls.length ||
         f.entrances.length ||
         f.pois.length ||
+        f.furniture.length ||
         f.navigation.nodes.length,
     ),
   );
@@ -209,6 +214,7 @@ function dismissRestoredNotice(): void {
 }
 
 const lastSavedAt = ref<number | null>(null);
+const autosaveError = ref("");
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleAutosave(): void {
   if (autosaveTimer !== null) clearTimeout(autosaveTimer);
@@ -217,8 +223,11 @@ function scheduleAutosave(): void {
     try {
       window.localStorage.setItem(AUTOSAVE_KEY, serializeProject(editor.project));
       lastSavedAt.value = Date.now();
+      autosaveError.value = "";
     } catch {
-      // localStorage unavailable (private mode, quota exceeded, etc.) — autosave is best-effort.
+      lastSavedAt.value = null;
+      autosaveError.value =
+        "자동 저장 공간이 부족하거나 사용할 수 없습니다. 내보내기 → 프로젝트 JSON으로 저장해 주세요.";
     }
   }, 1000);
 }
@@ -239,6 +248,8 @@ function onCalibrationPointsPicked({
 }
 
 let unsubscribers: Array<() => void> = [];
+/** Separate from `revision`: App.vue only needs to know selection *changed* (for the group/ungroup buttons' enabled state) — projectChanged already covers everything else that could affect them (e.g. a group being deleted out from under the current selection). */
+const selectionRevision = ref(0);
 
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
@@ -255,6 +266,7 @@ onMounted(() => {
     editor.on("projectChanged", scheduleAutosave),
     editor.on("projectLoaded", onProjectLoaded),
     editor.on("calibrationPointsPicked", onCalibrationPointsPicked),
+    editor.on("selectionChanged", () => selectionRevision.value++),
   ];
   if (restoredNotice.value)
     setTimeout(() => {
@@ -306,11 +318,18 @@ const tools = [
     hint: "지도 위를 클릭해 관심 지점을 추가하고 속성에서 이름을 입력하세요.",
   },
   {
+    id: "furniture",
+    label: "가구",
+    icon: mdiSofaOutline,
+    key: "F",
+    hint: "클릭해 가구를 배치하세요. 책상·의자·소파 등 기본 모델이 제공되며, 속성에서 종류·치수·회전을 조정할 수 있습니다.",
+  },
+  {
     id: "navigation",
     label: "경로 그리기",
     icon: mdiRoutes,
     key: "N",
-    hint: "빈 곳을 클릭해 지점을 잇따라 추가하세요. 기존 지점을 클릭하면 그 지점에 연결됩니다. Esc: 연결 끊기",
+    hint: "빈 곳을 클릭해 지점을 잇따라 추가하세요. 기존 지점을 클릭하면 그 지점에 연결됩니다. Shift: 수평/수직 · Esc: 연결 끊기",
   },
   {
     id: "calibrate",
@@ -333,7 +352,7 @@ const TOOL_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: "선택 및 탐색", ids: ["select"] },
   { label: "도형 작성", ids: ["polygon", "wall"] },
   { label: "출입구", ids: ["door"] },
-  { label: "POI 및 객체", ids: ["poi"] },
+  { label: "POI 및 객체", ids: ["poi", "furniture"] },
   { label: "내비게이션", ids: ["navigation"] },
   { label: "측정 및 보정", ids: ["calibrate"] },
   { label: "자동 감지", ids: ["draft-review"] },
@@ -364,6 +383,7 @@ const empty = computed(() => {
     !f.walls.length &&
     !f.entrances.length &&
     !f.pois.length &&
+    !f.furniture.length &&
     !f.navigation.nodes.length &&
     !hasReference.value
   );
@@ -377,6 +397,7 @@ const floorEmpty = computed(() => {
       !f.walls.length &&
       !f.entrances.length &&
       !f.pois.length &&
+      !f.furniture.length &&
       !f.navigation.nodes.length &&
       !f.navigation.edges.length)
   );
@@ -390,7 +411,21 @@ function onShortcut(event: KeyboardEvent): void {
     else undo();
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "g") {
+    event.preventDefault();
+    if (event.shiftKey) {
+      if (canUngroup.value) ungroupSelection();
+    } else if (canGroup.value) {
+      groupSelection();
+    }
+    return;
+  }
   if (event.ctrlKey || event.metaKey || event.altKey || show3d.value) return;
+  if (event.key === "Escape" && ui.activeToolId === "furniture") {
+    event.preventDefault();
+    selectTool("select");
+    return;
+  }
   const tool = tools.find((t) => t.key.toLowerCase() === event.key.toLowerCase());
   if (
     tool &&
@@ -423,6 +458,24 @@ function clearFloor(): void {
   )
     return;
   editor.clearFloor();
+}
+
+const canGroup = computed(() => {
+  selectionRevision.value;
+  return editor.selection.current.filter((e) => e.vertexIndex === undefined).length >= 2;
+});
+const canUngroup = computed(() => {
+  selectionRevision.value;
+  revision.value;
+  const entries = editor.selection.current;
+  if (entries.length !== 1) return false;
+  return !!editor.getActiveFloor()?.groups.some((g) => g.id === entries[0]!.id);
+});
+function groupSelection(): void {
+  editor.groupSelection("그룹");
+}
+function ungroupSelection(): void {
+  editor.ungroupSelection();
 }
 
 function downloadFile(filename: string, content: string, mimeType: string): void {
@@ -577,6 +630,25 @@ function selectRightTab(id: string): void {
         >
           <MdiIcon :path="mdiDeleteSweepOutline" :size="16" />
         </button>
+        <span class="topbar-divider" />
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!canGroup"
+          title="선택한 객체를 그룹으로 묶습니다 (Ctrl/⌘ G)"
+          aria-label="그룹으로 묶기"
+          @click="groupSelection"
+        >
+          <MdiIcon :path="mdiVectorCombine" :size="16" />
+        </button>
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!canUngroup"
+          title="그룹을 해제합니다 (구성 요소는 유지, Ctrl/⌘ Shift G)"
+          aria-label="그룹 해제"
+          @click="ungroupSelection"
+        >
+          <MdiIcon :path="mdiUngroup" :size="16" />
+        </button>
       </div>
 
       <span v-if="restoredNotice" class="restored-badge" role="status">
@@ -586,6 +658,7 @@ function selectRightTab(id: string): void {
         </button>
       </span>
       <span v-if="openError" class="error-text" role="alert">{{ openError }}</span>
+      <span v-if="autosaveError" class="error-text" role="alert">{{ autosaveError }}</span>
 
       <div class="spacer" />
 
@@ -641,6 +714,15 @@ function selectRightTab(id: string): void {
         </div>
 
         <div class="tool-groups" :class="{ 'icon-only': leftIconOnly }">
+          <FurnitureLibrary
+            v-if="!leftIconOnly"
+            :editor="editor"
+            :active="ui.activeToolId === 'furniture'"
+            @place="
+              show3d = false;
+              selectTool('furniture');
+            "
+          />
           <div v-for="group in groupedTools" :key="group.label" class="tool-group">
             <h4 v-if="!leftIconOnly" class="tool-group-label">
               {{ group.label }}
