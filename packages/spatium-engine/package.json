@@ -1,6 +1,6 @@
 {
   "name": "spatium-engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript toolkit for building, viewing, and embedding indoor maps — buildings, floors, rooms, walls, doors, POIs, and navigation/routing graphs.",
   "license": "MIT",
   "author": "cheonghakim",
