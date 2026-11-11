@@ -62,7 +62,7 @@ describe("findShortestPath", () => {
 
   it("returns a trivial zero-length path when start equals goal", () => {
     const result = findShortestPath(triangle, "A", "A");
-    expect(result).toEqual({ nodeIds: ["A"], edgeIds: [], distance: 0 });
+    expect(result).toEqual({ nodeIds: ["A"], edgeIds: [], distance: 0, cost: 0 });
   });
 
   it("avoidStairs rejects stairs edges even if they're the only route", () => {
@@ -94,7 +94,10 @@ describe("findShortestPath", () => {
 
     const withPreference = findShortestPath(graph, "A", "B", { preferElevator: true });
     expect(withPreference?.edgeIds).toEqual(["lift"]);
-    expect(withPreference?.distance).toBeCloseTo(4);
+    // The preference only steers the search; reported distance and time stay
+    // real (before 1.1.0, distance came back as the halved search weight).
+    expect(withPreference?.distance).toBe(8);
+    expect(withPreference?.cost).toBeCloseTo(8 / 1.2);
   });
 
   it("supports multi-floor routing across a connecting edge", () => {

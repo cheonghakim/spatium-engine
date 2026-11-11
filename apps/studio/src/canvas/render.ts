@@ -13,13 +13,31 @@ import type {
   DraftWallEntry,
   EditorCamera,
   LayerId,
+  Marquee,
   ReferenceLayerState,
   SelectionEntry,
 } from "@indoor/editor";
 import { getLoadedImage } from "./imageCache";
 
+/** Buildings drawn under the outdoor graph in the site view, already in site coordinates. */
+export interface SiteContext {
+  buildings: Array<{
+    id: string;
+    name: string;
+    outline: Point[];
+    /** The ground floor's spaces, for orientation. */
+    spaces: Point[][];
+    selected: boolean;
+  }>;
+  /** Building nodes outdoor paths can link to (entrances). */
+  anchors: Point[];
+  /** Outdoor edges ending at a building node. */
+  links: Array<[Point, Point]>;
+}
+
 export interface RenderState {
   floor: Floor | undefined;
+  site?: SiteContext | null;
   camera: EditorCamera;
   selection: readonly SelectionEntry[];
   draftPoints: readonly Point[];
@@ -36,7 +54,9 @@ export interface RenderState {
   draftWalls: readonly DraftWallEntry[];
   draftSpaces: readonly DraftSpaceEntry[];
   draftElements?: readonly DraftElementEntry[];
-  selectedDraftId?: string | null;
+  selectedDraftIds?: readonly string[];
+  /** Rubber-band selection box being dragged (Select / Draft Review tools). */
+  marquee?: Marquee | null;
   showGrid?: boolean;
 }
 
@@ -90,6 +110,8 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
 
   if (state.showGrid !== false) drawGrid(ctx, state.camera, canvas.width, canvas.height);
 
+  if (state.site) drawSiteContext(ctx, state.camera, state.site);
+
   if (state.floor) {
     let selectedSpace: Floor["spaces"][number] | undefined;
     let selectedVertexIndex: number | undefined;
@@ -109,6 +131,8 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
           selected ? COLORS.spaceSelectedFill : COLORS.spaceFill,
           selected ? COLORS.spaceSelectedStroke : COLORS.spaceStroke,
           true,
+          false,
+          space.holes,
         );
       }
     }
@@ -124,7 +148,7 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
           selected ? COLORS.wallSelected : COLORS.wall,
           Math.max(3, wall.thickness * 20),
         );
-        if (selected) {
+        if (selected && state.selection.length === 1) {
           drawVertexHandle(ctx, state.camera, wall.start, COLORS.vertexHandle);
           drawVertexHandle(ctx, state.camera, wall.end, COLORS.vertexHandle);
         }
@@ -134,7 +158,8 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       }
     }
 
-    if (selectedSpace) {
+    // Vertex handles only for a single selection — that's when they're editable.
+    if (selectedSpace && state.selection.length === 1) {
       for (let i = 0; i < selectedSpace.polygon.length; i++) {
         const isSelectedVertex = selectedVertexIndex === i;
         drawVertexHandle(
@@ -218,6 +243,8 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
 
   drawRoute(ctx, state.camera, state.routePoints);
 
+  const draftSelected = new Set(state.selectedDraftIds ?? []);
+
   for (const space of state.draftSpaces) {
     drawPolygon(
       ctx,
@@ -228,9 +255,19 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       true,
       true,
     );
-    if (space.id === state.selectedDraftId) {
-      for (const point of space.polygon)
-        drawVertexHandle(ctx, state.camera, point, COLORS.draftSelected);
+    if (draftSelected.has(space.id)) {
+      drawPolygon(
+        ctx,
+        state.camera,
+        space.polygon,
+        COLORS.spaceSelectedFill,
+        COLORS.draftSelected,
+        true,
+      );
+      // Vertex handles only for a single selection — that's when they're draggable.
+      if (draftSelected.size === 1)
+        for (const point of space.polygon)
+          drawVertexHandle(ctx, state.camera, point, COLORS.draftSelected);
     }
   }
   for (const wall of state.draftWalls) {
@@ -242,7 +279,7 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       state.camera,
       wall.start,
       wall.end,
-      wall.id === state.selectedDraftId
+      draftSelected.has(wall.id)
         ? COLORS.draftSelected
         : wall.accepted && !replaced
           ? COLORS.draftWallAccepted
@@ -250,7 +287,7 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       Math.max(3, wall.thickness * 20),
       true,
     );
-    if (wall.id === state.selectedDraftId) {
+    if (draftSelected.has(wall.id) && draftSelected.size === 1) {
       drawVertexHandle(ctx, state.camera, wall.start, COLORS.draftSelected);
       drawVertexHandle(ctx, state.camera, wall.end, COLORS.draftSelected);
     }
@@ -261,7 +298,7 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
       ctx,
       state.camera,
       element,
-      element.id === state.selectedDraftId
+      draftSelected.has(element.id)
         ? COLORS.draftSelected
         : element.accepted
           ? COLORS.draftWallAccepted
@@ -279,6 +316,27 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
   for (const point of state.calibrationPoints) {
     drawDot(ctx, state.camera, point, COLORS.calibration, 5);
   }
+
+  if (state.marquee) drawMarquee(ctx, state.camera, state.marquee);
+}
+
+/** Selection box: solid = window (left→right, fully inside), dashed = crossing (right→left, touching). */
+function drawMarquee(ctx: CanvasRenderingContext2D, camera: EditorCamera, marquee: Marquee): void {
+  const a = camera.worldToScreen(marquee.start);
+  const b = camera.worldToScreen(marquee.end);
+  const crossing = marquee.end.x < marquee.start.x;
+  ctx.save();
+  if (crossing) ctx.setLineDash([5, 4]);
+  ctx.fillStyle = crossing ? "rgba(110, 200, 140, 0.10)" : "rgba(110, 140, 255, 0.10)";
+  ctx.strokeStyle = crossing ? "#6ec88c" : COLORS.draftSelected;
+  ctx.lineWidth = 1;
+  const x = Math.min(a.x, b.x),
+    y = Math.min(a.y, b.y),
+    w = Math.abs(b.x - a.x),
+    h = Math.abs(b.y - a.y);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+  ctx.restore();
 }
 
 function drawElement(
@@ -535,6 +593,52 @@ function drawGrid(
   drawLines(MAJOR_GRID_METERS, COLORS.gridMajor);
 }
 
+function drawSiteContext(
+  ctx: CanvasRenderingContext2D,
+  camera: EditorCamera,
+  site: SiteContext,
+): void {
+  for (const building of site.buildings) {
+    for (const space of building.spaces) {
+      drawPolygon(
+        ctx,
+        camera,
+        space,
+        "rgba(184, 189, 199, 0.04)",
+        "rgba(154, 166, 200, 0.35)",
+        true,
+      );
+    }
+    if (building.outline.length >= 3) {
+      drawPolygon(
+        ctx,
+        camera,
+        building.outline,
+        building.selected ? COLORS.spaceSelectedFill : "rgba(184, 189, 199, 0.06)",
+        building.selected ? COLORS.spaceSelectedStroke : COLORS.spaceStroke,
+        true,
+      );
+      const center = building.outline.reduce(
+        (sum, p) => ({
+          x: sum.x + p.x / building.outline.length,
+          y: sum.y + p.y / building.outline.length,
+        }),
+        { x: 0, y: 0 },
+      );
+      const screen = camera.worldToScreen(center);
+      ctx.save();
+      ctx.fillStyle = building.selected ? COLORS.spaceSelectedStroke : "#c3c8d2";
+      ctx.font = "600 12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(building.name, screen.x, screen.y);
+      ctx.restore();
+    }
+  }
+  for (const [a, b] of site.links) drawLine(ctx, camera, a, b, COLORS.navigationEdge, 2, true);
+  for (const anchor of site.anchors) drawDot(ctx, camera, anchor, COLORS.entrance, 4);
+}
+
 function drawPolygon(
   ctx: CanvasRenderingContext2D,
   camera: EditorCamera,
@@ -543,6 +647,7 @@ function drawPolygon(
   strokeStyle: string,
   closed: boolean,
   dashed = false,
+  holes: readonly (readonly Point[])[] = [],
 ): void {
   if (points.length === 0) return;
 
@@ -557,10 +662,21 @@ function drawPolygon(
     ctx.lineTo(screen.x, screen.y);
   }
   if (closed) ctx.closePath();
+  for (const hole of holes) {
+    if (hole.length === 0) continue;
+    const start = camera.worldToScreen(hole[0] as Point);
+    ctx.moveTo(start.x, start.y);
+    for (let i = 1; i < hole.length; i++) {
+      const screen = camera.worldToScreen(hole[i] as Point);
+      ctx.lineTo(screen.x, screen.y);
+    }
+    ctx.closePath();
+  }
 
   if (fillStyle !== "transparent") {
     ctx.fillStyle = fillStyle;
-    ctx.fill();
+    // even-odd leaves holes unfilled regardless of ring winding.
+    ctx.fill("evenodd");
   }
   ctx.strokeStyle = strokeStyle;
   ctx.lineWidth = 2;

@@ -19,6 +19,16 @@ import {
 } from "./importedFurniture.js";
 import type { Overlay } from "../overlay.js";
 import type { RuntimeTheme } from "../theme.js";
+import {
+  buildRoutePath,
+  densifyRoutePath,
+  routeObstaclesForFloor,
+  sampleRoutePath,
+  segmentIndexAt,
+  type RouteCurveShape,
+  type RouteObstacles,
+  type RoutePath,
+} from "./routePath.js";
 
 export interface Renderer3DCallbacks {
   onSpaceClick?(space: Space): void;
@@ -30,6 +40,8 @@ export interface Renderer3DCallbacks {
   onContextLost?(): void;
   /** The WebGL context came back and the scene was rebuilt from the last known state. */
   onContextRestored?(): void;
+  /** Route playback moved onto another leg — the host should show that leg's floor. */
+  onRouteLegChange?(floorId: string | undefined, legIndex: number): void;
 }
 
 export interface Renderer3DState {
@@ -38,26 +50,78 @@ export interface Renderer3DState {
   routePoints: ReadonlyArray<Point | null>;
 }
 
-export type RouteCurveShape = "straight" | "smooth";
+export type { RouteCurveShape };
+/** `"marker"` shows a moving marker; `"flythrough"` moves only the camera. */
 export type RouteAnimationType = "marker" | "flythrough";
-export type RouteCameraMode = "first" | "third";
+/**
+ * `"third"` follows behind the marker, `"first"` looks from eye height,
+ * `"overview"` leaves the camera to the user (orbit/zoom stay enabled) and
+ * only moves the marker.
+ */
+export type RouteCameraMode = "first" | "third" | "overview";
 
 export interface RoutePlaybackOptions {
+  /** Shape of the drawn route line and the playback path (they always match). */
   curve?: RouteCurveShape;
   animationType?: RouteAnimationType;
   cameraMode?: RouteCameraMode;
-  /** Defaults to the path length divided by a fixed walking speed, clamped to a sane range. */
+  /** Playback time for the whole route at speed 1. Defaults to walking pace (1.3 m/s). */
   durationSeconds?: number;
+  /** Speed multiplier (default 1, clamped to 0.1–16). Change it later with setRoutePlaybackSpeed(). */
+  speed?: number;
+}
+
+/** One contiguous stretch of a route on a single floor, in travel order. */
+export interface RouteLeg {
+  floorId?: string;
+  points: ReadonlyArray<Point>;
+  /**
+   * Walls/holes a smoothed corner must keep clear of on this leg's floor. When
+   * omitted, the active floor's walls and holes are used if the leg is on it.
+   */
+  obstacles?: RouteObstacles;
+}
+
+export interface RoutePlaybackState {
+  paused: boolean;
+  /** 0–1 along the whole route, across floors. */
+  progress: number;
+  /** Meters travelled / total, along the drawn shape. */
+  distance: number;
+  totalDistance: number;
+  speed: number;
+  /** Seconds left at the current speed. */
+  remainingSeconds: number;
+  legIndex: number;
+  legCount: number;
+  floorId?: string;
+}
+
+interface PlaybackLeg {
+  floorId?: string;
+  path: RoutePath;
+  start: number;
 }
 
 interface ActiveRoutePlayback {
-  curve: THREE.Curve<THREE.Vector3>;
-  duration: number;
-  elapsed: number;
+  rawLegs: RouteLeg[];
+  legs: PlaybackLeg[];
+  total: number;
+  distance: number;
+  legIndex: number;
+  durationSeconds: number | undefined;
+  speed: number;
+  paused: boolean;
   animationType: RouteAnimationType;
   cameraMode: RouteCameraMode;
   markerMesh: THREE.Mesh | null;
+  traveledMesh: THREE.Mesh | null;
+  traveledPath: RoutePath | null;
+  /** Smoothed horizontal heading (radians, three.js XZ plane) the follow camera looks along. */
+  headingYaw: number;
+  snapCamera: boolean;
   priorControls: { pan: boolean; zoom: boolean; rotate: boolean };
+  priorCamera: { position: THREE.Vector3; target: THREE.Vector3 };
   lastFrameTime: number;
 }
 
@@ -75,15 +139,31 @@ const SPACE_COLORS: Record<SpaceType, number> = {
 const POI_HOVER_SCALE = 1.4;
 const WALK_SPEED_METERS_PER_SECOND = 1.3;
 const MIN_PLAYBACK_DURATION_SECONDS = 2;
-const MAX_PLAYBACK_DURATION_SECONDS = 40;
+const MIN_PLAYBACK_SPEED = 0.1;
+const MAX_PLAYBACK_SPEED = 16;
 const THIRD_PERSON_BACK_METERS = 4;
 const THIRD_PERSON_HEIGHT_METERS = 2.5;
+const THIRD_PERSON_LOOK_HEIGHT_METERS = 1;
+/** Closest the follow camera is pulled in when a wall blocks its view of the marker. */
+const THIRD_PERSON_MIN_BACK_METERS = 0.6;
 const FIRST_PERSON_EYE_HEIGHT_METERS = 1.6;
+/** The camera aims at the path this far ahead, so it starts turning before a corner. */
+const CAMERA_LOOK_AHEAD_METERS = 2;
+/** Exponential smoothing rates (1/s) for the follow camera's heading and position. */
+const CAMERA_HEADING_RESPONSE = 5;
+const CAMERA_POSITION_RESPONSE = 8;
 const MARKER_HEIGHT_METERS = 0.35;
+const ROUTE_LINE_WIDTH_METERS = 0.3;
+const ROUTE_LINE_HEIGHT_METERS = 0.04;
+const ROUTE_TRAVELED_HEIGHT_METERS = 0.05;
+const ROUTE_TRAVELED_COLOR = 0x9aa0a8;
+/** Segment length the travelled overlay is split into, so it tracks the marker closely. */
+const ROUTE_TRAVELED_STEP_METERS = 0.2;
 
 /**
- * Three.js scene built fresh from Core data every update() — meshes are
- * never the source of truth (spec §22). World XY (map plane) maps to the
+ * Three.js scene derived from Core data on update() — meshes are never the
+ * source of truth (spec §22); each section is rebuilt only when its input
+ * data changed (see syncSections()). World XY (map plane) maps to the
  * three.js XZ ground plane; world/space height maps to three.js Y (up):
  * (x, y) -> (x, elevationY, -y).
  */
@@ -126,10 +206,15 @@ export class Renderer3D {
   private fittedFloorId: string | undefined;
   private hadGeometry = false;
   private routePlayback: ActiveRoutePlayback | null = null;
+  private routeShape: RouteCurveShape = "smooth";
+  /** Separate from the pointer raycaster so its `far` limit never leaks into picking. */
+  private readonly occlusionRaycaster = new THREE.Raycaster();
   /** WebGL context lost (see webglcontextlost) — the animate loop is paused until restored. */
   private contextLost = false;
   /** The last state passed to update(), replayed to rebuild the scene after context restore. */
   private lastState: Renderer3DState | null = null;
+  /** What each section was last built from — see syncSections()/sectionKey(). */
+  private sectionKeys: Partial<Record<SceneSection, SectionKey>> = {};
 
   constructor(
     container: HTMLElement,
@@ -186,8 +271,9 @@ export class Renderer3D {
   /** Exposed for tests only: returns the live mesh object for a space id (or null), so a test can
    *  assert the scene was actually rebuilt (a fresh mesh instance) rather than merely that some
    *  mesh happens to still be mapped to that id — e.g. after a WebGL context restore rebuilds the
-   *  scene from the last known state. */
-  getSpaceMeshForTesting(spaceId: string): THREE.Object3D | null {
+   *  scene from the last known state. Typed as an opaque `object` so the public declarations
+   *  never reference `three` types (consumers would otherwise need `@types/three`). */
+  getSpaceMeshForTesting(spaceId: string): object | null {
     return this.findSpaceMesh(spaceId);
   }
 
@@ -238,135 +324,381 @@ export class Renderer3D {
   }
 
   /**
-   * Plays a moving-marker and/or camera fly-through along the route's
-   * on-screen shape — the first contiguous run of non-null points, i.e.
-   * whatever `rebuildRoute` currently draws as a line on the active floor
-   * (a route can dip to null where a node lives on another floor; playback
-   * only follows what's actually visible here, matching the static line's
-   * existing scope). `curve: 'smooth'` runs a Catmull-Rom spline through the
-   * same points instead of straight segments — no new path data is stored,
-   * it's computed fresh each call.
+   * Plays the route leg by leg, in travel order — legs on other floors are
+   * reached through `onRouteLegChange`, which asks the host to switch floors.
+   * The marker and camera follow exactly the shape `rebuildRoute` draws
+   * (same `buildRoutePath` call on the same points), so the marker never
+   * leaves the line. Legs with fewer than two points are skipped.
    */
-  playRoute(points: ReadonlyArray<Point | null>, options: RoutePlaybackOptions = {}): void {
-    const curve = this.buildRouteCurve(points, options.curve ?? "smooth");
-    if (!curve) return;
-
+  playRoute(legs: ReadonlyArray<RouteLeg>, options: RoutePlaybackOptions = {}): void {
     this.stopRoute();
+    if (options.curve) this.setRouteShape(options.curve);
+
+    const rawLegs: RouteLeg[] = legs.map((leg) => ({
+      ...(leg.floorId !== undefined ? { floorId: leg.floorId } : {}),
+      points: [...leg.points],
+      ...(leg.obstacles ? { obstacles: leg.obstacles } : {}),
+    }));
+    const built = this.buildPlaybackLegs(rawLegs);
+    if (!built) return;
 
     const animationType = options.animationType ?? "marker";
     const cameraMode = options.cameraMode ?? "third";
-    const duration =
-      options.durationSeconds ??
-      Math.min(
-        MAX_PLAYBACK_DURATION_SECONDS,
-        Math.max(MIN_PLAYBACK_DURATION_SECONDS, curve.getLength() / WALK_SPEED_METERS_PER_SECOND),
-      );
 
     let markerMesh: THREE.Mesh | null = null;
     if (animationType === "marker") {
-      const geometry = new THREE.SphereGeometry(0.28, 16, 16);
-      const material = new THREE.MeshStandardMaterial({ color: this.theme.accentColor });
-      markerMesh = new THREE.Mesh(geometry, material);
+      markerMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.28, 20, 16),
+        new THREE.MeshStandardMaterial({
+          color: this.theme.accentColor,
+          emissive: this.theme.accentColor,
+          emissiveIntensity: 0.25,
+        }),
+      );
       this.playbackGroup.add(markerMesh);
     }
 
     this.routePlayback = {
-      curve,
-      duration,
-      elapsed: 0,
+      rawLegs,
+      legs: built.legs,
+      total: built.total,
+      distance: 0,
+      legIndex: -1,
+      durationSeconds:
+        options.durationSeconds !== undefined && options.durationSeconds > 0
+          ? options.durationSeconds
+          : undefined,
+      speed: clampPlaybackSpeed(options.speed ?? 1),
+      paused: false,
       animationType,
       cameraMode,
       markerMesh,
+      traveledMesh: null,
+      traveledPath: null,
+      headingYaw: 0,
+      snapCamera: true,
       priorControls: {
         pan: this.controls.enablePan,
         zoom: this.controls.enableZoom,
         rotate: this.controls.enableRotate,
       },
+      priorCamera: {
+        position: this.camera.position.clone(),
+        target: this.controls.target.clone(),
+      },
       lastFrameTime: performance.now(),
     };
-    this.setControlsEnabled({ pan: false, zoom: false, rotate: false });
+    if (cameraMode !== "overview")
+      this.setControlsEnabled({ pan: false, zoom: false, rotate: false });
+    this.positionPlayback(0, true);
   }
 
+  /**
+   * Ends playback. Follow cameras hand the view back where it was before
+   * playback started, with the user's controls restored.
+   */
   stopRoute(): void {
     const playback = this.routePlayback;
     if (!playback) return;
-    disposeGroup(this.playbackGroup);
-
-    const lastPoint = playback.curve.getPointAt(1);
-    this.controls.target.copy(lastPoint);
-    this.setControlsEnabled(playback.priorControls);
-    this.controls.update();
-
     this.routePlayback = null;
+    disposeGroup(this.playbackGroup);
+    if (playback.cameraMode !== "overview") {
+      this.camera.position.copy(playback.priorCamera.position);
+      this.controls.target.copy(playback.priorCamera.target);
+      this.setControlsEnabled(playback.priorControls);
+      this.controls.update();
+    }
   }
 
-  private buildRouteCurve(
-    points: ReadonlyArray<Point | null>,
-    shape: RouteCurveShape,
-  ): THREE.Curve<THREE.Vector3> | null {
-    let run: THREE.Vector3[] = [];
-    for (const point of points) {
-      if (point) {
-        run.push(this.toGroundVector(point, 0.05));
-        continue;
-      }
-      if (run.length >= 2) break;
-      run = [];
+  /**
+   * Freezes playback where it is. Follow cameras hand orbit/zoom back to the
+   * user around the marker until resumeRoute().
+   */
+  pauseRoute(): void {
+    const playback = this.routePlayback;
+    if (!playback || playback.paused) return;
+    playback.paused = true;
+    if (playback.cameraMode !== "overview") {
+      this.controls.target.copy(this.followLookTarget(playback));
+      this.setControlsEnabled({ pan: true, zoom: true, rotate: true });
+      this.controls.update();
     }
-    if (run.length < 2) return null;
-
-    if (shape === "smooth") return new THREE.CatmullRomCurve3(run, false, "catmullrom", 0.5);
-
-    const path = new THREE.CurvePath<THREE.Vector3>();
-    for (let i = 0; i < run.length - 1; i++) {
-      path.add(new THREE.LineCurve3(run[i] as THREE.Vector3, run[i + 1] as THREE.Vector3));
-    }
-    return path;
   }
 
-  /** Advances the active playback by one frame; called from the animate() loop instead of controls.update(). */
+  resumeRoute(): void {
+    const playback = this.routePlayback;
+    if (!playback || !playback.paused) return;
+    playback.paused = false;
+    playback.lastFrameTime = performance.now();
+    if (playback.cameraMode !== "overview")
+      this.setControlsEnabled({ pan: false, zoom: false, rotate: false });
+  }
+
+  /** Jumps to `progress` (0–1) along the whole route; works while paused too. */
+  seekRoute(progress: number): void {
+    const playback = this.routePlayback;
+    if (!playback || !Number.isFinite(progress)) return;
+    playback.distance = Math.max(0, Math.min(1, progress)) * playback.total;
+    playback.snapCamera = true;
+    this.positionPlayback(0, true);
+    if (playback.paused && playback.cameraMode !== "overview") {
+      this.controls.target.copy(this.followLookTarget(playback));
+      this.controls.update();
+    }
+  }
+
+  setRoutePlaybackSpeed(speed: number): void {
+    if (this.routePlayback && Number.isFinite(speed))
+      this.routePlayback.speed = clampPlaybackSpeed(speed);
+  }
+
+  getRoutePlaybackState(): RoutePlaybackState | null {
+    const playback = this.routePlayback;
+    if (!playback) return null;
+    const metersPerSecond = this.baseSpeed(playback) * playback.speed;
+    const leg = playback.legs[playback.legIndex];
+    return {
+      paused: playback.paused,
+      progress: playback.total > 0 ? playback.distance / playback.total : 1,
+      distance: playback.distance,
+      totalDistance: playback.total,
+      speed: playback.speed,
+      remainingSeconds:
+        metersPerSecond > 0 ? (playback.total - playback.distance) / metersPerSecond : 0,
+      legIndex: Math.max(0, playback.legIndex),
+      legCount: playback.legs.length,
+      ...(leg?.floorId !== undefined ? { floorId: leg.floorId } : {}),
+    };
+  }
+
+  /**
+   * Shape of the drawn route line and of playback. Changing it mid-playback
+   * reshapes both and keeps the relative progress.
+   */
+  setRouteShape(shape: RouteCurveShape): void {
+    if (shape === this.routeShape) return;
+    this.routeShape = shape;
+    this.rebuildRoute(this.lastState?.routePoints ?? []);
+    // Record what was just drawn so the next update() doesn't redraw it again.
+    if (this.lastState) this.sectionKeys.route = this.routeKey(this.lastState);
+    else delete this.sectionKeys.route;
+    const playback = this.routePlayback;
+    if (!playback) return;
+    const built = this.buildPlaybackLegs(playback.rawLegs);
+    if (!built) {
+      this.stopRoute();
+      return;
+    }
+    const progress = playback.total > 0 ? playback.distance / playback.total : 0;
+    playback.legs = built.legs;
+    playback.total = built.total;
+    playback.distance = progress * built.total;
+    playback.legIndex = -1;
+    this.positionPlayback(0, true);
+  }
+
+  getRouteShape(): RouteCurveShape {
+    return this.routeShape;
+  }
+
+  private buildPlaybackLegs(
+    legs: ReadonlyArray<RouteLeg>,
+  ): { legs: PlaybackLeg[]; total: number } | null {
+    const built: PlaybackLeg[] = [];
+    let total = 0;
+    for (const leg of legs) {
+      const activeFloor = this.lastState?.floor;
+      const obstacles =
+        leg.obstacles ??
+        (leg.floorId === undefined || leg.floorId === activeFloor?.id
+          ? routeObstaclesForFloor(activeFloor)
+          : undefined);
+      const path = buildRoutePath(leg.points, this.routeShape, undefined, obstacles);
+      if (!path) continue;
+      built.push({
+        ...(leg.floorId !== undefined ? { floorId: leg.floorId } : {}),
+        path,
+        start: total,
+      });
+      total += path.length;
+    }
+    return built.length > 0 ? { legs: built, total } : null;
+  }
+
+  /** Meters per second at speed 1: walking pace, slowed so a short route still lasts a moment. */
+  private baseSpeed(playback: ActiveRoutePlayback): number {
+    if (playback.durationSeconds) return playback.total / playback.durationSeconds;
+    return Math.min(WALK_SPEED_METERS_PER_SECOND, playback.total / MIN_PLAYBACK_DURATION_SECONDS);
+  }
+
+  /** Advances the active playback by one frame; called from the animate() loop. */
   private stepRoutePlayback(): void {
     const playback = this.routePlayback;
     if (!playback) return;
 
     const now = performance.now();
-    const dt = Math.min(0.1, (now - playback.lastFrameTime) / 1000);
+    const dt = Math.min(0.1, Math.max(0, (now - playback.lastFrameTime) / 1000));
     playback.lastFrameTime = now;
-    playback.elapsed += dt;
+    if (playback.paused) return;
 
-    const u = Math.min(1, playback.duration > 0 ? playback.elapsed / playback.duration : 1);
-    const point = playback.curve.getPointAt(u);
-    const tangent = playback.curve.getTangentAt(u).normalize();
-    const up = new THREE.Vector3(0, 1, 0);
+    playback.distance = Math.min(
+      playback.total,
+      playback.distance + this.baseSpeed(playback) * playback.speed * dt,
+    );
+    this.positionPlayback(dt, false);
+    if (this.routePlayback === playback && playback.distance >= playback.total) this.stopRoute();
+  }
+
+  /** Index of the leg containing `distance`: the last leg starting at or before it. */
+  private legIndexAt(playback: ActiveRoutePlayback, distance: number): number {
+    let index = 0;
+    for (let i = 1; i < playback.legs.length; i++) {
+      if ((playback.legs[i] as PlaybackLeg).start <= distance) index = i;
+    }
+    return index;
+  }
+
+  /** Enters leg `index`: rebuilds the travelled overlay and asks the host to show its floor. */
+  private enterLeg(playback: ActiveRoutePlayback, index: number): void {
+    if (playback.legIndex === index) return;
+    playback.legIndex = index;
+    playback.snapCamera = true;
+    const leg = playback.legs[index] as PlaybackLeg;
+
+    if (playback.traveledMesh) {
+      this.playbackGroup.remove(playback.traveledMesh);
+      playback.traveledMesh.geometry.dispose();
+      (playback.traveledMesh.material as THREE.Material).dispose();
+    }
+    playback.traveledPath = densifyRoutePath(leg.path, ROUTE_TRAVELED_STEP_METERS);
+    playback.traveledMesh = new THREE.Mesh(
+      buildRibbonGeometry(
+        playback.traveledPath,
+        ROUTE_LINE_WIDTH_METERS * 1.05,
+        ROUTE_TRAVELED_HEIGHT_METERS,
+      ),
+      routeRibbonMaterial(ROUTE_TRAVELED_COLOR),
+    );
+    playback.traveledMesh.geometry.setDrawRange(0, 0);
+    this.playbackGroup.add(playback.traveledMesh);
+
+    this.callbacks.onRouteLegChange?.(leg.floorId, index);
+  }
+
+  /** Places marker, travelled overlay and (optionally) the follow camera at the current distance. */
+  private positionPlayback(dt: number, driveCameraWhilePaused: boolean): void {
+    const playback = this.routePlayback;
+    if (!playback) return;
+    this.enterLeg(playback, this.legIndexAt(playback, playback.distance));
+    // onRouteLegChange may have stopped or replaced playback (e.g. the host failed to switch floors).
+    if (this.routePlayback !== playback) return;
+    const leg = playback.legs[playback.legIndex] as PlaybackLeg;
+    const local = playback.distance - leg.start;
+    const here = sampleRoutePath(leg.path, local);
+    const point = this.toGroundVector(here.point, ROUTE_LINE_HEIGHT_METERS);
 
     if (playback.markerMesh) {
       playback.markerMesh.position.set(point.x, point.y + MARKER_HEIGHT_METERS, point.z);
     }
-
-    if (playback.cameraMode === "third") {
-      const camPos = point
-        .clone()
-        .addScaledVector(tangent, -THIRD_PERSON_BACK_METERS)
-        .addScaledVector(up, THIRD_PERSON_HEIGHT_METERS);
-      this.camera.position.copy(camPos);
-      this.camera.lookAt(point.x, point.y + 1, point.z);
-    } else {
-      const eye = point.clone().addScaledVector(up, FIRST_PERSON_EYE_HEIGHT_METERS);
-      this.camera.position.copy(eye);
-      this.camera.lookAt(eye.clone().add(tangent));
+    if (playback.traveledMesh && playback.traveledPath) {
+      const done = segmentIndexAt(playback.traveledPath, local);
+      playback.traveledMesh.geometry.setDrawRange(0, done * 6);
     }
 
-    if (u >= 1) this.stopRoute();
+    if (playback.cameraMode === "overview") return;
+    if (playback.paused && !driveCameraWhilePaused) return;
+
+    // Aim a little ahead along the path so the camera starts turning before a corner.
+    const ahead = sampleRoutePath(leg.path, local + CAMERA_LOOK_AHEAD_METERS).point;
+    let dx = ahead.x - here.point.x;
+    let dy = ahead.y - here.point.y;
+    if (Math.hypot(dx, dy) < 0.05) {
+      dx = here.direction.x;
+      dy = here.direction.y;
+    }
+    // Map (x, y) -> three.js (x, -y): yaw is measured in the XZ plane.
+    const targetYaw = Math.atan2(-dy, dx);
+    if (playback.snapCamera) {
+      playback.headingYaw = targetYaw;
+    } else {
+      const delta = wrapAngle(targetYaw - playback.headingYaw);
+      playback.headingYaw += delta * (1 - Math.exp(-dt * CAMERA_HEADING_RESPONSE));
+    }
+    const heading = new THREE.Vector3(
+      Math.cos(playback.headingYaw),
+      0,
+      Math.sin(playback.headingYaw),
+    );
+
+    if (playback.cameraMode === "third") {
+      const target = this.followLookTarget(playback);
+      const desired = point
+        .clone()
+        .addScaledVector(heading, -THIRD_PERSON_BACK_METERS)
+        .setY(point.y + THIRD_PERSON_HEIGHT_METERS);
+      this.pullInFrontOfWalls(target, desired);
+      if (playback.snapCamera) this.camera.position.copy(desired);
+      else this.camera.position.lerp(desired, 1 - Math.exp(-dt * CAMERA_POSITION_RESPONSE));
+      this.camera.lookAt(target);
+    } else {
+      const eye = point.clone().setY(point.y + FIRST_PERSON_EYE_HEIGHT_METERS);
+      this.camera.position.copy(eye);
+      this.camera.lookAt(eye.clone().add(heading));
+    }
+    playback.snapCamera = false;
   }
 
+  /** Where the follow camera looks: just above the current playback position. */
+  private followLookTarget(playback: ActiveRoutePlayback): THREE.Vector3 {
+    const leg = playback.legs[Math.max(0, playback.legIndex)] as PlaybackLeg;
+    const here = sampleRoutePath(leg.path, playback.distance - leg.start).point;
+    return this.toGroundVector(here, THIRD_PERSON_LOOK_HEIGHT_METERS);
+  }
+
+  /** Moves `camera` toward `target` so no wall sits between them. Mutates `camera`. */
+  private pullInFrontOfWalls(target: THREE.Vector3, camera: THREE.Vector3): void {
+    const offset = camera.clone().sub(target);
+    const length = offset.length();
+    if (length < 1e-6) return;
+    const direction = offset.divideScalar(length);
+    this.occlusionRaycaster.set(target, direction);
+    this.occlusionRaycaster.far = length;
+    const hit = this.occlusionRaycaster
+      .intersectObject(this.wallGroup, true)
+      .find((h) => h.object instanceof THREE.Mesh);
+    if (!hit) return;
+    const pulled = Math.max(THIRD_PERSON_MIN_BACK_METERS, hit.distance - 0.3);
+    camera.copy(target).addScaledVector(direction, pulled);
+  }
+
+  /**
+   * Pans the view so `point` (plan coordinates) is the orbit target, keeping the
+   * camera's current distance and angle. Ignored while a follow-camera route
+   * playback is driving the view (it would be overwritten next frame anyway);
+   * overview playback leaves the camera to the user, so it pans as usual.
+   */
+  focusPoint(point: Point): void {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    const playback = this.routePlayback;
+    if (playback && !playback.paused && playback.cameraMode !== "overview") return;
+    const target = this.toGroundVector(point, 0);
+    const delta = target.clone().sub(this.controls.target);
+    this.controls.target.copy(target);
+    this.camera.position.add(delta);
+    this.controls.update();
+  }
+
+  /**
+   * Syncs the scene to `state`. Each section (spaces, walls+entrances, POIs,
+   * furniture, overlays, route) is rebuilt only when its inputs changed — see
+   * `sectionKey()`: the identity of every input element plus a structural
+   * fingerprint of its content, so in-place edits (e.g. pushing a space or
+   * moving a vertex) are picked up while repeated calls with the same data
+   * (camera moves, hover, resize…) cost no geometry churn.
+   */
   update(state: Renderer3DState): void {
     this.lastState = state;
-    this.rebuildSpaces(state.floor?.spaces ?? []);
-    this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
-    this.rebuildPois(state.floor?.pois ?? []);
-    this.rebuildFurniture(state.floor?.furniture ?? []);
-    this.rebuildOverlays(state.overlays, state.floor?.id);
-    this.rebuildRoute(state.routePoints);
+    this.syncSections(state, false);
     const bounds = new THREE.Box3()
       .setFromObject(this.spaceGroup)
       .union(new THREE.Box3().setFromObject(this.wallGroup))
@@ -435,6 +767,50 @@ export class Renderer3D {
     this.renderer.domElement.remove();
   }
 
+  /**
+   * Rebuilds each section whose inputs differ from what it was last built from
+   * (`force` rebuilds all — used after a WebGL context restore, when every GPU
+   * resource is gone). A skipped section keeps its meshes, materials and the
+   * mesh→data maps untouched, so nothing is created or disposed for it.
+   */
+  private syncSections(state: Renderer3DState, force: boolean): void {
+    const floor = state.floor;
+    const spaces = floor?.spaces ?? [];
+    const walls = floor?.walls ?? [];
+    const entrances = floor?.entrances ?? [];
+    const pois = floor?.pois ?? [];
+    const furniture = floor?.furniture ?? [];
+    const keys = this.sectionKeys;
+    const next = (section: SceneSection, key: SectionKey): boolean => {
+      if (!force && sameSectionKey(keys[section], key)) return false;
+      keys[section] = key;
+      return true;
+    };
+
+    if (next("spaces", sectionKey([spaces]))) this.rebuildSpaces(spaces);
+    if (next("walls", sectionKey([walls, entrances]))) this.rebuildWalls(walls, entrances);
+    if (next("pois", sectionKey([pois]))) this.rebuildPois(pois);
+    if (next("furniture", sectionKey([furniture]))) this.rebuildFurniture(furniture);
+    if (
+      next("overlays", sectionKey([state.overlays], `${floor?.id ?? ""}|${this.theme.accentColor}`))
+    )
+      this.rebuildOverlays(state.overlays, floor?.id);
+    if (next("route", this.routeKey(state))) this.rebuildRoute(state.routePoints);
+  }
+
+  /** Route inputs: points (by value — hosts often rebuild the array), shape, accent color, and the
+   *  floor's walls + space holes, which the drawn curve avoids (routeObstaclesForFloor). Must be
+   *  called after the walls/spaces keys are current for `state`. */
+  private routeKey(state: Renderer3DState): SectionKey {
+    const obstacles = state.floor
+      ? `${this.sectionKeys.walls?.hash ?? ""}|${this.sectionKeys.spaces?.hash ?? ""}`
+      : "none";
+    return {
+      refs: [],
+      hash: `${fingerprint([state.routePoints])}|${this.routeShape}|${this.theme.accentColor}|${obstacles}`,
+    };
+  }
+
   private toGroundVector(point: Point, y = 0): THREE.Vector3 {
     return new THREE.Vector3(point.x, y, -point.y);
   }
@@ -453,6 +829,11 @@ export class Renderer3D {
           ? stairSpaceGeometry(space)
           : (() => {
               const shape = new THREE.Shape(space.polygon.map((p) => new THREE.Vector2(p.x, p.y)));
+              for (const hole of space.holes ?? []) {
+                if (hole.length >= 3) {
+                  shape.holes.push(new THREE.Path(hole.map((p) => new THREE.Vector2(p.x, p.y))));
+                }
+              }
               const geometry = new THREE.ExtrudeGeometry(shape, {
                 depth: 0.08,
                 bevelEnabled: false,
@@ -578,27 +959,31 @@ export class Renderer3D {
     disposeGroup(this.routeGroup);
     if (points.length === 0) return;
 
-    let segment: THREE.Vector3[] = [];
-    const flushSegment = () => {
-      if (segment.length >= 2) {
-        const geometry = new THREE.BufferGeometry().setFromPoints(segment);
-        const line = new THREE.Line(
-          geometry,
-          new THREE.LineBasicMaterial({ color: this.theme.accentColor }),
+    // Drawn as a flat ribbon (WebGL ignores line widths above 1px) through the same
+    // buildRoutePath() shape playback follows, so the marker stays on the line.
+    const obstacles = routeObstaclesForFloor(this.lastState?.floor);
+    let run: Point[] = [];
+    const flushRun = () => {
+      const path = buildRoutePath(run, this.routeShape, undefined, obstacles);
+      if (path) {
+        this.routeGroup.add(
+          new THREE.Mesh(
+            buildRibbonGeometry(path, ROUTE_LINE_WIDTH_METERS, ROUTE_LINE_HEIGHT_METERS),
+            routeRibbonMaterial(this.theme.accentColor),
+          ),
         );
-        this.routeGroup.add(line);
       }
-      segment = [];
+      run = [];
     };
 
     for (const point of points) {
       if (!point) {
-        flushSegment();
+        flushRun();
         continue;
       }
-      segment.push(this.toGroundVector(point, 0.05));
+      run.push(point);
     }
-    flushSegment();
+    flushRun();
   }
 
   private updatePointer(evt: PointerEvent): THREE.Vector2 {
@@ -646,15 +1031,7 @@ export class Renderer3D {
     this.contextLost = false;
     // All GPU-side geometry/textures were lost with the context — rebuild the scene from the
     // last known state rather than waiting for the next unrelated update() call.
-    if (this.lastState) {
-      const state = this.lastState;
-      this.rebuildSpaces(state.floor?.spaces ?? []);
-      this.rebuildWalls(state.floor?.walls ?? [], state.floor?.entrances ?? []);
-      this.rebuildPois(state.floor?.pois ?? []);
-      this.rebuildFurniture(state.floor?.furniture ?? []);
-      this.rebuildOverlays(state.overlays, state.floor?.id);
-      this.rebuildRoute(state.routePoints);
-    }
+    if (this.lastState) this.syncSections(this.lastState, true);
     this.callbacks.onContextRestored?.();
     if (!this.disposed && this.animationHandle === null) this.animate();
   };
@@ -697,20 +1074,221 @@ export class Renderer3D {
       this.animationHandle = null;
       return;
     }
-    if (this.routePlayback) {
-      this.stepRoutePlayback();
-    } else {
-      this.controls.update();
-    }
+    const playback = this.routePlayback;
+    if (playback) this.stepRoutePlayback();
+    // Follow cameras drive the view themselves while playing; otherwise the user's controls do.
+    const cameraDriven =
+      playback !== null &&
+      this.routePlayback === playback &&
+      !playback.paused &&
+      playback.cameraMode !== "overview";
+    if (!cameraDriven) this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.animationHandle = requestAnimationFrame(this.animate);
   };
+}
+
+type SceneSection = "spaces" | "walls" | "pois" | "furniture" | "overlays" | "route";
+
+/**
+ * What a scene section was built from: the identity of every input element
+ * (so the mesh→Space/POI/Overlay maps never hand out stale objects after a
+ * floor swap or undo that recreates equal data) plus a structural fingerprint
+ * of their content (so in-place mutation is caught).
+ */
+interface SectionKey {
+  refs: readonly unknown[];
+  hash: string;
+}
+
+function sectionKey(inputs: ReadonlyArray<readonly unknown[]>, extra = ""): SectionKey {
+  const refs: unknown[] = [];
+  for (const list of inputs) for (const item of list) refs.push(item);
+  return { refs, hash: `${fingerprint(inputs)}|${extra}` };
+}
+
+function sameSectionKey(previous: SectionKey | undefined, next: SectionKey): boolean {
+  if (!previous || previous.hash !== next.hash) return false;
+  if (previous.refs.length !== next.refs.length) return false;
+  for (let i = 0; i < next.refs.length; i++) if (previous.refs[i] !== next.refs[i]) return false;
+  return true;
+}
+
+const FINGERPRINT_F64 = new Float64Array(1);
+const FINGERPRINT_U32 = new Uint32Array(FINGERPRINT_F64.buffer);
+/** Strings at least this long (e.g. base64 GLB `modelData`) have their hash memoized. */
+const LONG_STRING = 512;
+const longStringHashes = new Map<string, readonly [number, number]>();
+
+/**
+ * Two independent 32-bit hashes (FNV-1a and a murmur-style mix) over every
+ * primitive reachable from `value` — array lengths, object keys, numbers by
+ * their exact float bits, strings by char code. No JSON serialization;
+ * linear in the data size, which is far cheaper than rebuilding geometry.
+ */
+function fingerprint(value: unknown): string {
+  let a = 0x811c9dc5;
+  let b = 0x9747b28c;
+  const word = (x: number): void => {
+    a = Math.imul(a ^ x, 0x01000193);
+    b = Math.imul(b ^ x, 0x5bd1e995);
+    b ^= b >>> 15;
+  };
+  const text = (s: string): void => {
+    word(s.length);
+    if (s.length < LONG_STRING) {
+      for (let i = 0; i < s.length; i++) word(s.charCodeAt(i));
+      return;
+    }
+    let cached = longStringHashes.get(s);
+    if (!cached) {
+      let x = 0x811c9dc5;
+      let y = 0x9747b28c;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        x = Math.imul(x ^ c, 0x01000193);
+        y = Math.imul(y ^ c, 0x5bd1e995);
+        y ^= y >>> 15;
+      }
+      cached = [x, y];
+      if (longStringHashes.size >= 64) longStringHashes.clear();
+      longStringHashes.set(s, cached);
+    }
+    word(cached[0]);
+    word(cached[1]);
+  };
+  const visiting = new Set<object>();
+  const visit = (v: unknown): void => {
+    switch (typeof v) {
+      case "number":
+        FINGERPRINT_F64[0] = v;
+        word(1);
+        word(FINGERPRINT_U32[0] as number);
+        word(FINGERPRINT_U32[1] as number);
+        return;
+      case "string":
+        word(2);
+        text(v);
+        return;
+      case "boolean":
+        word(v ? 3 : 4);
+        return;
+      case "undefined":
+        word(5);
+        return;
+      case "bigint":
+        word(6);
+        text(v.toString());
+        return;
+      case "object": {
+        if (v === null) {
+          word(7);
+          return;
+        }
+        if (visiting.has(v)) {
+          word(8);
+          return;
+        }
+        visiting.add(v);
+        if (Array.isArray(v)) {
+          word(9);
+          word(v.length);
+          for (const item of v) visit(item);
+        } else {
+          word(10);
+          for (const key of Object.keys(v)) {
+            text(key);
+            visit((v as Record<string, unknown>)[key]);
+          }
+          word(11);
+        }
+        visiting.delete(v);
+        return;
+      }
+      default:
+        word(12); // functions / symbols carry no render input
+    }
+  };
+  visit(value);
+  return `${(a >>> 0).toString(36)}.${(b >>> 0).toString(36)}`;
 }
 
 function setSpaceEmissive(mesh: THREE.Object3D | null, color: number): void {
   if (!mesh || !(mesh instanceof THREE.Mesh)) return;
   const material = mesh.material as THREE.MeshStandardMaterial;
   material.emissive.setHex(color);
+}
+
+function clampPlaybackSpeed(speed: number): number {
+  return Math.min(MAX_PLAYBACK_SPEED, Math.max(MIN_PLAYBACK_SPEED, speed));
+}
+
+/** Wraps an angle difference into (-π, π]. */
+function wrapAngle(angle: number): number {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+function routeRibbonMaterial(color: THREE.ColorRepresentation): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+}
+
+/**
+ * A flat strip `width` wide along `path`, lying `y` above the floor, with
+ * mitred joins so sharp corners don't open gaps. Two vertices per path point
+ * and six indices per segment — so `setDrawRange(0, 6 * k)` shows exactly the
+ * first k segments.
+ */
+function buildRibbonGeometry(path: RoutePath, width: number, y: number): THREE.BufferGeometry {
+  const { points } = path;
+  const n = points.length;
+  const half = width / 2;
+  const positions = new Float32Array(n * 2 * 3);
+  const normalOf = (a: Point, b: Point): Point => {
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+  };
+  for (let i = 0; i < n; i++) {
+    const p = points[i] as Point;
+    const prev = i > 0 ? normalOf(points[i - 1] as Point, p) : null;
+    const next = i < n - 1 ? normalOf(p, points[i + 1] as Point) : null;
+    let offset: Point;
+    if (prev && next) {
+      const mx = prev.x + next.x;
+      const my = prev.y + next.y;
+      const len = Math.hypot(mx, my);
+      if (len < 1e-6) {
+        offset = { x: prev.x * half, y: prev.y * half };
+      } else {
+        const m = { x: mx / len, y: my / len };
+        // Miter length grows as 1/cos(half-angle); cap it so a hairpin doesn't spike.
+        const scale = half / Math.max(0.35, m.x * prev.x + m.y * prev.y);
+        offset = { x: m.x * scale, y: m.y * scale };
+      }
+    } else {
+      const only = (prev ?? next) as Point;
+      offset = { x: only.x * half, y: only.y * half };
+    }
+    // Map (x, y) -> three.js (x, y-up, -y), matching toGroundVector().
+    positions.set(
+      [p.x + offset.x, y, -(p.y + offset.y), p.x - offset.x, y, -(p.y - offset.y)],
+      i * 6,
+    );
+  }
+  const indices: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const a = i * 2;
+    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  return geometry;
 }
 
 function disposeGroup(group: THREE.Group): void {

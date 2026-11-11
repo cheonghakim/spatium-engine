@@ -23,6 +23,11 @@ export class MinHeap<T> {
     this.siftUp(this.entries.length - 1);
   }
 
+  /** Priority of the entry pop() would return next, or Infinity when empty. */
+  peekPriority(): number {
+    return this.entries[0]?.priority ?? Infinity;
+  }
+
   pop(): T | undefined {
     const top = this.entries[0];
     if (!top) return undefined;

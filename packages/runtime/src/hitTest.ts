@@ -1,6 +1,6 @@
 import {
   distance,
-  isPointInPolygon,
+  isPointInSpace,
   type Floor,
   type Furniture,
   type Point,
@@ -42,7 +42,7 @@ export function hitTest(
 
   for (let i = floor.spaces.length - 1; i >= 0; i--) {
     const space = floor.spaces[i];
-    if (space && isPointInPolygon(point, space.polygon)) return { kind: "space", space };
+    if (space && isPointInSpace(space, point)) return { kind: "space", space };
   }
 
   return null;

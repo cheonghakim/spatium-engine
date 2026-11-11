@@ -1,13 +1,24 @@
 import {
+  buildingToSite,
+  createConnector,
+  createFloor,
+  createSite,
+  planFloorLinkConversion,
   createGroup,
   createNavigationEdge,
   distance,
+  isPointInSpace,
+  siteRoutingEdges,
   type Building,
+  type BuildingPlacement,
+  type Connector,
+  type ConnectorType,
   type Floor,
   type IndoorProject,
   type NavigationEdge,
   type NavigationEdgeType,
   type Point,
+  type Site,
 } from "@indoor/core";
 import type { Command } from "./commands/Command.js";
 import { AddSpaceCommand } from "./commands/SpaceCommands.js";
@@ -19,10 +30,15 @@ import {
   DeleteNavigationEdgeCommand,
 } from "./commands/NavigationCommands.js";
 import { DeleteVertexCommand } from "./commands/VertexCommands.js";
-import { buildDeleteCommand, stripFromGroups } from "./commands/buildDeleteCommand.js";
+import { buildDeleteSelectionCommand } from "./commands/buildDeleteCommand.js";
 import { CompoundCommand } from "./commands/CompoundCommand.js";
 import { ClearFloorCommand } from "./commands/ClearFloorCommand.js";
-import { findObjectKind } from "./selection/findObjectKind.js";
+import {
+  AddConnectorCommand,
+  DeleteConnectorCommand,
+  connectorCleanupCommands,
+} from "./commands/ConnectorCommands.js";
+import { ChangePropertyCommand } from "./commands/PropertyCommands.js";
 import { DraftReviewTool } from "./tools/DraftReviewTool.js";
 import { EditorCamera } from "./camera/EditorCamera.js";
 import { DraftManager } from "./draft/DraftManager.js";
@@ -41,6 +57,8 @@ import { ToolManager } from "./tools/ToolManager.js";
 import { PanTool } from "./tools/PanTool.js";
 import { SelectTool } from "./tools/SelectTool.js";
 import { PolygonTool } from "./tools/PolygonTool.js";
+import { HoleTool } from "./tools/HoleTool.js";
+import { SiteBuildingTool } from "./tools/SiteBuildingTool.js";
 import { WallTool } from "./tools/WallTool.js";
 import { CalibrateTool } from "./tools/CalibrateTool.js";
 import { DoorTool } from "./tools/DoorTool.js";
@@ -75,6 +93,8 @@ export interface IndoorEditorEvents {
   projectLoaded: IndoorProject;
   /** The calibrate tool collected two clicks; caller should ask the user for the real distance. */
   calibrationPointsPicked: { a: Point; b: Point };
+  /** A tool refused an action; the code says why ("hole-no-space", "hole-invalid"). */
+  toolNotice: string;
 }
 
 /**
@@ -104,6 +124,8 @@ export class IndoorEditor {
 
   private readonly emitter = new EventEmitter<IndoorEditorEvents>();
   private activeFloorId: string | null = null;
+  private sitePlaneCache: { site: Site; floor: Floor } | null = null;
+  readonly siteBuildingTool: SiteBuildingTool;
   /**
    * Which of the two undo/redo stacks (main history vs. the pending draft)
    * was most recently acted on. `undo()`/`redo()` consult this — instead of
@@ -135,8 +157,11 @@ export class IndoorEditor {
     );
 
     this.snapping.register(new VertexSnap());
-    this.snapping.register(new EdgeSnap());
-    this.snapping.register(new OrthogonalSnap());
+    // Edge/orthogonal snaps lock one axis; with the grid on they round the
+    // other one to it, so they can't pull points off the grid.
+    const gridSize = () => this.gridSnap.activeGridSize();
+    this.snapping.register(new EdgeSnap(undefined, gridSize));
+    this.snapping.register(new OrthogonalSnap(undefined, gridSize));
     this.snapping.register(this.gridSnap);
 
     const toolContext: ToolContext = {
@@ -146,7 +171,8 @@ export class IndoorEditor {
       snapping: this.snapping,
       executeCommand: (command) => this.executeCommand(command),
       requestRender: () => this.emitter.emit("projectChanged", undefined),
-      findNodeBuilding: (nodeId) => this.findNodeLocation(nodeId)?.building.floors,
+      findNodeBuilding: (nodeId) => this.nodeEdgeFloors(nodeId),
+      findFloorBuilding: (floorId) => this.findFloorBuilding(floorId),
     };
 
     this.tools = new ToolManager();
@@ -154,6 +180,17 @@ export class IndoorEditor {
     this.tools.register(new SelectTool(toolContext));
     this.tools.register(new DraftReviewTool(toolContext, this.draft));
     this.tools.register(new PolygonTool(toolContext));
+    this.tools.register(
+      new HoleTool(toolContext, (reason) =>
+        this.emitter.emit("toolNotice", reason === "no-space" ? "hole-no-space" : "hole-invalid"),
+      ),
+    );
+    this.siteBuildingTool = new SiteBuildingTool(
+      toolContext,
+      () => this.project.buildings,
+      (building, placement) => this.placementCommand(building, placement),
+    );
+    this.tools.register(this.siteBuildingTool);
     this.tools.register(new WallTool(toolContext));
     this.tools.register(new DoorTool(toolContext));
     this.tools.register(new POITool(toolContext));
@@ -175,6 +212,7 @@ export class IndoorEditor {
 
   getActiveFloor(): Floor | undefined {
     if (!this.activeFloorId) return undefined;
+    if (this.project.site?.id === this.activeFloorId) return this.getSitePlane();
     for (const building of this.project.buildings) {
       const floor = building.floors.find((f) => f.id === this.activeFloorId);
       if (floor) return floor;
@@ -218,6 +256,17 @@ export class IndoorEditor {
 
   /** Switches to the object's floor if needed, selects it, and centers the camera on it. */
   focusObject(id: string): void {
+    // A connector isn't drawn itself: focus one of its stop nodes, whose
+    // property panel shows the connector card where the problem gets fixed.
+    const connector = this.findConnector(id);
+    if (connector) {
+      const stopNode = connector.connector.stops
+        .map((stop) => stop.nodeId)
+        .find((nodeId) => this.findNodeLocation(nodeId, connector.building));
+      if (stopNode) this.focusObject(stopNode);
+      return;
+    }
+
     const location = locateObject(this.project, id);
     if (!location) return;
 
@@ -443,6 +492,15 @@ export class IndoorEditor {
           }
         }
       }
+      commands.push(...connectorCleanupCommands(building, { floorIds: new Set([floor.id]) }));
+      const plane = this.getSitePlane();
+      if (plane) {
+        for (const edge of plane.navigation.edges) {
+          if (nodeIds.has(edge.from) || nodeIds.has(edge.to)) {
+            commands.push(new DeleteNavigationEdgeCommand(plane, edge.id));
+          }
+        }
+      }
     }
     commands.push(new ClearFloorCommand(floor));
 
@@ -503,10 +561,11 @@ export class IndoorEditor {
 
     const floor = this.getActiveFloor();
     if (!floor) return;
-    const entry = this.selection.current[0];
+    const entries = this.selection.current;
+    const entry = entries[0];
     if (!entry) return;
 
-    if (entry.vertexIndex !== undefined) {
+    if (entries.length === 1 && entry.vertexIndex !== undefined) {
       const space = floor.spaces.find((s) => s.id === entry.id);
       if (space && space.polygon.length > 3) {
         this.executeCommand(new DeleteVertexCommand(space, entry.vertexIndex));
@@ -515,21 +574,332 @@ export class IndoorEditor {
       return;
     }
 
-    const kind = findObjectKind(floor, entry.id);
-    if (!kind) return;
-    const commands: Command[] = [
-      buildDeleteCommand(
-        floor,
-        entry.id,
-        kind,
-        (nodeId) => this.findNodeLocation(nodeId)?.building.floors,
-      ),
-    ];
-    if (kind !== "group") commands.push(...stripFromGroups(floor, entry.id));
-    this.executeCommand(
-      commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!,
+    const command = buildDeleteSelectionCommand(
+      floor,
+      entries.filter((e) => e.vertexIndex === undefined).map((e) => e.id),
+      (nodeId) => this.nodeEdgeFloors(nodeId),
+      (floorId) => this.findFloorBuilding(floorId),
     );
+    if (!command) return;
+    this.executeCommand(command);
     this.selection.clear();
+  }
+
+  // ---- Site (campus) and georeference ----
+
+  /** Creates the project's site if it has none (named after the project) and returns it. */
+  ensureSite(): Site {
+    if (!this.project.site) {
+      this.executeCommand(
+        new ChangePropertyCommand(this.project, "site", createSite(this.project.name), "Add Site"),
+      );
+    }
+    return this.project.site!;
+  }
+
+  /** Sets one site field (name, geoAnchor, address…) as an undoable step. */
+  updateSite<K extends keyof Site>(key: K, value: Site[K]): void {
+    const site = this.ensureSite();
+    this.executeCommand(new ChangePropertyCommand(site, key, value, "Edit Site"));
+  }
+
+  /** Places a building in the site frame (origin in meters, bearing in degrees); undefined resets it. */
+  setBuildingPlacement(buildingId: string, placement: BuildingPlacement | undefined): void {
+    const building = this.project.buildings.find((b) => b.id === buildingId);
+    if (!building) return;
+    this.executeCommand(this.placementCommand(building, placement));
+  }
+
+  /**
+   * Moving/rotating a building moves its entrances in the site frame, so the
+   * stored length of every outdoor link to it changes too. One undo step
+   * covers both, keeping saved data consistent with the routing graph (which
+   * re-measures these links anyway — see siteRoutingEdges).
+   */
+  private placementCommand(building: Building, placement: BuildingPlacement | undefined): Command {
+    const place = new ChangePropertyCommand(building, "placement", placement, "Place Building");
+    const site = this.project.site;
+    if (!site?.navigation.edges.length) return place;
+    // Measure against the new placement, then restore it for the command to apply.
+    const previous = building.placement;
+    place.execute();
+    const updated = new Map(siteRoutingEdges(this.project).map((e) => [e.id, e.distance]));
+    place.undo();
+    if (previous === undefined) delete building.placement;
+    const commands: Command[] = [place];
+    for (const edge of site.navigation.edges) {
+      const length = updated.get(edge.id);
+      if (length !== undefined && length !== edge.distance)
+        commands.push(new ChangePropertyCommand(edge, "distance", length, "Update Link Length"));
+    }
+    return commands.length === 1 ? place : new CompoundCommand("Place Building", commands);
+  }
+
+  // ---- Site view: the outdoor graph edited like a floor ----
+
+  /**
+   * The site's outdoor graph presented as a Floor, so the ordinary select /
+   * navigation tools and delete logic work on it unchanged. Its `navigation`
+   * IS `site.navigation` (same object), so every edit lands in the site; the
+   * other collections are empty and unused. Rebuilt when the site changes.
+   */
+  getSitePlane(): Floor | undefined {
+    const site = this.project.site;
+    if (!site) return undefined;
+    const cached = this.sitePlaneCache;
+    if (!cached || cached.site !== site || cached.floor.navigation !== site.navigation) {
+      const floor = createFloor(site.name, 0, 0);
+      floor.id = site.id;
+      floor.navigation = site.navigation;
+      this.sitePlaneCache = { site, floor };
+    }
+    this.sitePlaneCache!.floor.name = site.name;
+    return this.sitePlaneCache!.floor;
+  }
+
+  /** True while the site (campus outdoor) plane is the active "floor". */
+  isSiteView(): boolean {
+    return !!this.project.site && this.activeFloorId === this.project.site.id;
+  }
+
+  /** Switches to the site plane, creating the site first if the project has none. */
+  enterSiteView(): void {
+    const site = this.ensureSite();
+    this.setFloor(site.id);
+    this.setTool("site-building");
+  }
+
+  /** Building navigation nodes an outdoor node can link to, labeled for pickers. */
+  siteLinkTargets(): Array<{ nodeId: string; buildingId: string; label: string; type: string }> {
+    const targets: Array<{ nodeId: string; buildingId: string; label: string; type: string }> = [];
+    for (const building of this.project.buildings) {
+      for (const floor of building.floors) {
+        for (const node of floor.navigation.nodes) {
+          targets.push({
+            nodeId: node.id,
+            buildingId: building.id,
+            label: `${building.name} · ${floor.name} · ${node.name?.trim() || node.id.slice(0, 6)}`,
+            type: node.type,
+          });
+        }
+      }
+    }
+    return targets;
+  }
+
+  /** Site edges between this outdoor node and building nodes. */
+  siteLinksOf(siteNodeId: string): Array<{ edgeId: string; nodeId: string }> {
+    const site = this.project.site;
+    if (!site) return [];
+    const outdoor = new Set(site.navigation.nodes.map((n) => n.id));
+    const links: Array<{ edgeId: string; nodeId: string }> = [];
+    for (const edge of site.navigation.edges) {
+      if (edge.from === siteNodeId && !outdoor.has(edge.to)) {
+        links.push({ edgeId: edge.id, nodeId: edge.to });
+      } else if (edge.to === siteNodeId && !outdoor.has(edge.from)) {
+        links.push({ edgeId: edge.id, nodeId: edge.from });
+      }
+    }
+    return links;
+  }
+
+  /** Building node position in site coordinates (through its building's placement). */
+  siteNodePosition(nodeId: string): Point | null {
+    const site = this.project.site;
+    const outdoor = site?.navigation.nodes.find((n) => n.id === nodeId);
+    if (outdoor) return outdoor.position;
+    const location = this.findNodeLocation(nodeId);
+    return location ? buildingToSite(location.building, location.node.position) : null;
+  }
+
+  /**
+   * Links an outdoor node to a building node (typically an entrance) with a
+   * walk edge stored in the site graph. Distance is measured in site
+   * coordinates, so place the building first.
+   */
+  linkSiteNode(siteNodeId: string, buildingNodeId: string): void {
+    const plane = this.getSitePlane();
+    const from = this.siteNodePosition(siteNodeId);
+    const to = this.siteNodePosition(buildingNodeId);
+    if (!plane || !from || !to) return;
+    if (this.siteLinksOf(siteNodeId).some((link) => link.nodeId === buildingNodeId)) return;
+    const edge = createNavigationEdge(siteNodeId, buildingNodeId, distance(from, to));
+    this.executeCommand(new AddNavigationEdgeCommand(plane, edge));
+  }
+
+  removeSiteEdge(edgeId: string): void {
+    const plane = this.getSitePlane();
+    if (plane) this.executeCommand(new DeleteNavigationEdgeCommand(plane, edgeId));
+  }
+
+  // ---- Holes ----
+
+  /** Removes one hole from a space (undoable). */
+  removeHole(spaceId: string, holeIndex: number): void {
+    const space = this.project.buildings
+      .flatMap((b) => b.floors)
+      .flatMap((f) => f.spaces)
+      .find((s) => s.id === spaceId);
+    if (!space?.holes?.[holeIndex]) return;
+    const holes = space.holes.filter((_, i) => i !== holeIndex);
+    this.executeCommand(
+      new ChangePropertyCommand(space, "holes", holes.length ? holes : undefined, "Remove Hole"),
+    );
+  }
+
+  // ---- Converting hand-drawn cross-floor links into connectors ----
+
+  /**
+   * Replaces hand-drawn cross-floor edges with connectors, in one undoable
+   * step (see planFloorLinkConversion). With `nodeId`, only that node's chain
+   * is converted. Returns how many connectors were created and which groups
+   * were left alone and why (two nodes on one floor, or one-way links a
+   * connector can't express).
+   */
+  convertFloorLinksToConnectors(nodeId?: string): {
+    created: number;
+    skipped: number;
+    reasons: Array<"multiple-nodes-on-floor" | "one-way-ambiguous">;
+  } {
+    const buildings = nodeId
+      ? [this.findNodeLocation(nodeId)?.building].filter((b): b is Building => !!b)
+      : this.project.buildings;
+    const commands: Command[] = [];
+    let created = 0;
+    let skipped = 0;
+    const reasons: Array<"multiple-nodes-on-floor" | "one-way-ambiguous"> = [];
+    for (const building of buildings) {
+      const plan = planFloorLinkConversion(building, nodeId);
+      skipped += plan.skipped.length;
+      reasons.push(...plan.skipped.map((s) => s.reason));
+      for (const conversion of plan.conversions) {
+        for (const { floorId, edgeId } of conversion.edges) {
+          const floor = building.floors.find((f) => f.id === floorId);
+          if (floor) commands.push(new DeleteNavigationEdgeCommand(floor, edgeId));
+        }
+        const stops = conversion.stops.map((stop) => {
+          const floor = building.floors.find((f) => f.id === stop.floorId)!;
+          return this.stopFor(floor, stop.nodeId);
+        });
+        const connector = createConnector(conversion.type, stops, conversion.accessible);
+        if (conversion.direction) connector.direction = conversion.direction;
+        commands.push(new AddConnectorCommand(building, connector));
+        created++;
+      }
+    }
+    if (commands.length) {
+      this.executeCommand(new CompoundCommand("Convert Floor Links", commands));
+    }
+    return { created, skipped, reasons };
+  }
+
+  // ---- Connectors (elevators, stairs, escalators, ramps) ----
+
+  /** The building that owns a floor. */
+  findFloorBuilding(floorId: string): Building | undefined {
+    return this.project.buildings.find((b) => b.floors.some((f) => f.id === floorId));
+  }
+
+  /** Connectors with a stop at this navigation node, with their building. */
+  connectorsAtNode(nodeId: string): Array<{ building: Building; connector: Connector }> {
+    const result: Array<{ building: Building; connector: Connector }> = [];
+    for (const building of this.project.buildings) {
+      for (const connector of building.connectors ?? []) {
+        if (connector.stops.some((stop) => stop.nodeId === nodeId)) {
+          result.push({ building, connector });
+        }
+      }
+    }
+    return result;
+  }
+
+  /** Finds a connector by id anywhere in the project. */
+  findConnector(connectorId: string): { building: Building; connector: Connector } | null {
+    for (const building of this.project.buildings) {
+      const connector = building.connectors?.find((c) => c.id === connectorId);
+      if (connector) return { building, connector };
+    }
+    return null;
+  }
+
+  /**
+   * Creates a connector whose first stop is this node (and the space it
+   * stands in, when it's an elevator/stairs space). Returns it, or null when
+   * the node doesn't exist.
+   */
+  createConnectorAtNode(nodeId: string, type: ConnectorType, name?: string): Connector | null {
+    const location = this.findNodeLocation(nodeId);
+    if (!location) return null;
+    const connector = createConnector(type, [this.stopFor(location.floor, nodeId)]);
+    if (name) connector.name = name;
+    this.executeCommand(new AddConnectorCommand(location.building, connector));
+    return connector;
+  }
+
+  /**
+   * Adds (or moves) the connector's stop on the node's floor. A connector
+   * stops at most once per floor, so an existing stop there is replaced.
+   */
+  addConnectorStop(connectorId: string, nodeId: string): void {
+    const found = this.findConnector(connectorId);
+    const location = this.findNodeLocation(nodeId, found?.building);
+    if (!found || !location) return;
+    const stops = found.connector.stops.filter((stop) => stop.floorId !== location.floor.id);
+    stops.push(this.stopFor(location.floor, nodeId));
+    this.executeCommand(
+      new ChangePropertyCommand(found.connector, "stops", stops, "Add Connector Stop"),
+    );
+  }
+
+  removeConnectorStop(connectorId: string, nodeId: string): void {
+    const found = this.findConnector(connectorId);
+    if (!found) return;
+    const stops = found.connector.stops.filter((stop) => stop.nodeId !== nodeId);
+    if (stops.length === found.connector.stops.length) return;
+    this.executeCommand(
+      new ChangePropertyCommand(found.connector, "stops", stops, "Remove Connector Stop"),
+    );
+  }
+
+  /** Sets one connector field (name, type, accessible, direction, spec…) as an undoable step. */
+  updateConnector<K extends keyof Connector>(
+    connectorId: string,
+    key: K,
+    value: Connector[K],
+  ): void {
+    const found = this.findConnector(connectorId);
+    if (!found) return;
+    this.executeCommand(new ChangePropertyCommand(found.connector, key, value, "Edit Connector"));
+  }
+
+  deleteConnector(connectorId: string): void {
+    const found = this.findConnector(connectorId);
+    if (!found) return;
+    this.executeCommand(new DeleteConnectorCommand(found.building, connectorId));
+  }
+
+  private stopFor(floor: Floor, nodeId: string): Connector["stops"][number] {
+    const node = floor.navigation.nodes.find((n) => n.id === nodeId);
+    const shaft = node
+      ? floor.spaces.find(
+          (space) =>
+            (space.type === "elevator" || space.type === "stairs") &&
+            isPointInSpace(space, node.position),
+        )
+      : undefined;
+    return shaft ? { floorId: floor.id, nodeId, spaceId: shaft.id } : { floorId: floor.id, nodeId };
+  }
+
+  /**
+   * Every graph that may store an edge touching this node: its building's
+   * floors (cross-floor links) plus the site plane (outdoor links to
+   * entrances) — so deleting a node also drops those edges.
+   */
+  private nodeEdgeFloors(nodeId: string): readonly Floor[] | undefined {
+    const floors = this.findNodeLocation(nodeId)?.building.floors;
+    const plane = this.getSitePlane();
+    if (!plane) return floors;
+    return floors ? [...floors, plane] : [plane];
   }
 
   /** Finds which building/floor a navigation node belongs to, optionally restricted to one building. */

@@ -12,8 +12,19 @@ export {
   MoveFurnitureCommand,
 } from "./FurnitureCommands.js";
 export { AddGroupCommand, DeleteGroupCommand } from "./GroupCommands.js";
-export { buildDeleteCommand, stripFromGroups } from "./buildDeleteCommand.js";
+export {
+  buildDeleteCommand,
+  buildDeleteSelectionCommand,
+  stripFromGroups,
+} from "./buildDeleteCommand.js";
 export { AddFloorCommand } from "./FloorCommands.js";
+export {
+  AddConnectorCommand,
+  DeleteConnectorCommand,
+  RemoveConnectorReferencesCommand,
+  connectorCleanupCommands,
+} from "./ConnectorCommands.js";
+export type { ConnectorReferenceRemoval } from "./ConnectorCommands.js";
 export { AddWallCommand, DeleteWallCommand, MoveWallCommand } from "./WallCommands.js";
 export { AddBuildingCommand } from "./BuildingCommands.js";
 export {

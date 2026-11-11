@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   IndoorRuntime,
-  type RouteAnimationType,
-  type RouteCameraMode,
+  type RoutePlaybackOptions,
+  type RoutePlaybackState,
   type RouteCurveShape,
 } from "@indoor/runtime";
 import type { IndoorEditor } from "@indoor/editor";
@@ -13,36 +13,63 @@ const containerRef = ref<HTMLDivElement | null>(null);
 const revision = ref(0);
 const loading = ref(true);
 const error = ref("");
-const isPlaying = ref(false);
+/** WebGL context lost mid-session: rendering is paused until the browser restores it. */
+const contextLost = ref(false);
+const WEBGL_UNAVAILABLE_MESSAGE =
+  "3D 화면을 시작하지 못했습니다. 브라우저의 그래픽 가속(WebGL) 사용 여부를 확인하고 다시 시도해 주세요. 2D 편집은 계속 사용할 수 있습니다.";
+type ViewMode = "overview" | "follow" | "first";
+const VIEW_MODES: Record<ViewMode, Pick<RoutePlaybackOptions, "animationType" | "cameraMode">> = {
+  overview: { animationType: "marker", cameraMode: "overview" },
+  follow: { animationType: "marker", cameraMode: "third" },
+  first: { animationType: "flythrough", cameraMode: "first" },
+};
+const SPEEDS = [0.5, 1, 2, 4] as const;
+
+const playback = ref<RoutePlaybackState | null>(null);
+const isPlaying = computed(() => playback.value !== null);
 const curve = ref<RouteCurveShape>("smooth");
-const animationType = ref<RouteAnimationType>("marker");
-const cameraMode = ref<RouteCameraMode>("third");
+const viewMode = ref<ViewMode>("follow");
+const speed = ref<number>(1);
 let runtime: IndoorRuntime | null = null;
 let disposed = false;
 let generation = 0;
 let unsubscribers: Array<() => void> = [];
-let playbackWatchHandle: ReturnType<typeof setInterval> | null = null;
+/** Set by the runtime's `render3d.unavailable` event during the current refresh. */
+let webglFailed = false;
+let playbackFrame: number | null = null;
 
-const previewProject = computed(() => {
+/**
+ * Counts for the floor the 3D view shows. Recomputed from `revision` on every
+ * refresh: the project is mutated in place and getPreviewProject() returns the
+ * same object, so a computed chained off it would never notice a different
+ * building/floor or new geometry and would describe a stale floor.
+ */
+const floorStats = computed(() => {
   revision.value;
-  return props.editor.getPreviewProject();
+  const floorId = props.editor.getActiveFloor()?.id;
+  const floor = props.editor
+    .getPreviewProject()
+    .buildings.flatMap((b) => b.floors)
+    .find((f) => f.id === floorId);
+  const spaces = floor?.spaces.length ?? 0;
+  const walls = floor?.walls.length ?? 0;
+  const furniture = floor?.furniture.length ?? 0;
+  return {
+    spaces,
+    walls,
+    furniture,
+    empty:
+      spaces === 0 &&
+      walls === 0 &&
+      furniture === 0 &&
+      !floor?.entrances.length &&
+      !floor?.pois.length,
+  };
 });
-const previewFloor = computed(() =>
-  previewProject.value.buildings
-    .flatMap((b) => b.floors)
-    .find((f) => f.id === props.editor.getActiveFloor()?.id),
-);
-const spaceCount = computed(() => previewFloor.value?.spaces.length ?? 0);
-const wallCount = computed(() => previewFloor.value?.walls.length ?? 0);
-const furnitureCount = computed(() => previewFloor.value?.furniture.length ?? 0);
-const isEmpty = computed(
-  () =>
-    spaceCount.value === 0 &&
-    wallCount.value === 0 &&
-    !previewFloor.value?.entrances.length &&
-    !previewFloor.value?.pois.length &&
-    !previewFloor.value?.furniture.length,
-);
+const spaceCount = computed(() => floorStats.value.spaces);
+const wallCount = computed(() => floorStats.value.walls);
+const furnitureCount = computed(() => floorStats.value.furniture);
+const isEmpty = computed(() => floorStats.value.empty);
 const hasDraft = computed(() => {
   revision.value;
   const draft = props.editor.draft.current;
@@ -56,38 +83,68 @@ const canPlayRoute = computed(() => {
 function syncRouteIntoRuntime(): void {
   if (!runtime) return;
   const preview = props.editor.routePreview.current;
-  if (preview?.result) runtime.startRoute(preview.startNodeId, preview.endNodeId, preview.options);
+  if (preview?.result) runtime.startRoute(preview.start, preview.end, preview.options);
   else runtime.clearRoute();
+}
+
+/** Mirrors the runtime's playback state every frame while playback is active. */
+function trackPlayback(): void {
+  playback.value = runtime?.getRouteAnimationState() ?? null;
+  playbackFrame = playback.value ? requestAnimationFrame(trackPlayback) : null;
+}
+
+function stopTracking(): void {
+  if (playbackFrame !== null) cancelAnimationFrame(playbackFrame);
+  playbackFrame = null;
 }
 
 function playAnimation(): void {
   if (!runtime || !canPlayRoute.value) return;
   runtime.playRouteAnimation({
     curve: curve.value,
-    animationType: animationType.value,
-    cameraMode: cameraMode.value,
+    speed: speed.value,
+    ...VIEW_MODES[viewMode.value],
   });
-  isPlaying.value = true;
-  if (playbackWatchHandle === null) {
-    playbackWatchHandle = setInterval(() => {
-      if (!runtime?.isPlayingRouteAnimation()) {
-        isPlaying.value = false;
-        if (playbackWatchHandle !== null) {
-          clearInterval(playbackWatchHandle);
-          playbackWatchHandle = null;
-        }
-      }
-    }, 250);
-  }
+  stopTracking();
+  trackPlayback();
 }
 
 function stopAnimation(): void {
   runtime?.stopRouteAnimation();
-  isPlaying.value = false;
-  if (playbackWatchHandle !== null) {
-    clearInterval(playbackWatchHandle);
-    playbackWatchHandle = null;
+  stopTracking();
+  playback.value = null;
+}
+
+function togglePause(): void {
+  if (!runtime || !playback.value) return;
+  if (playback.value.paused) runtime.resumeRouteAnimation();
+  else runtime.pauseRouteAnimation();
+  playback.value = runtime.getRouteAnimationState();
+}
+
+function seek(event: Event): void {
+  if (!runtime) return;
+  runtime.seekRouteAnimation(Number((event.target as HTMLInputElement).value) / 1000);
+  playback.value = runtime.getRouteAnimationState();
+}
+
+watch(curve, (shape) => runtime?.setRouteShape(shape));
+watch(speed, (value) => runtime?.setRouteAnimationSpeed(value));
+
+const playbackFloorName = computed(() => {
+  const floorId = playback.value?.floorId;
+  if (!floorId) return "";
+  revision.value;
+  for (const building of props.editor.getPreviewProject().buildings) {
+    const floor = building.floors.find((f) => f.id === floorId);
+    if (floor) return floor.name;
   }
+  return "";
+});
+
+function formatSeconds(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
 async function refresh(): Promise<void> {
@@ -96,18 +153,24 @@ async function refresh(): Promise<void> {
   const ticket = ++generation;
   revision.value++;
   try {
-    await current.load(previewProject.value);
+    await current.load(props.editor.getPreviewProject());
     if (disposed || ticket !== generation) return;
     const floorId = props.editor.getActiveFloor()?.id;
     if (floorId) current.setFloor(floorId);
+    // The runtime reports a missing WebGL context through an event instead of
+    // throwing (so embeds degrade gracefully) — treat it as a failed start here.
+    webglFailed = false;
     current.setCameraMode("3d");
+    if (webglFailed) {
+      error.value = WEBGL_UNAVAILABLE_MESSAGE;
+      return;
+    }
+    current.setRouteShape(curve.value);
     current.start();
     syncRouteIntoRuntime();
     error.value = "";
   } catch {
-    if (!disposed && ticket === generation)
-      error.value =
-        "3D 화면을 시작하지 못했습니다. 브라우저의 그래픽 가속(WebGL) 사용 여부를 확인하고 다시 시도해 주세요.";
+    if (!disposed && ticket === generation) error.value = WEBGL_UNAVAILABLE_MESSAGE;
   } finally {
     if (!disposed && ticket === generation) loading.value = false;
   }
@@ -119,13 +182,23 @@ onMounted(() => {
   unsubscribers = [
     props.editor.on("projectChanged", refresh),
     props.editor.on("floorChanged", refresh),
+    runtime.on("render3d.unavailable", () => {
+      webglFailed = true;
+    }),
+    runtime.on("render3d.contextLost", () => {
+      contextLost.value = true;
+      stopAnimation();
+    }),
+    runtime.on("render3d.contextRestored", () => {
+      contextLost.value = false;
+    }),
   ];
   void refresh();
 });
 onBeforeUnmount(() => {
   disposed = true;
   generation++;
-  if (playbackWatchHandle !== null) clearInterval(playbackWatchHandle);
+  stopTracking();
   for (const unsubscribe of unsubscribers) unsubscribe();
   runtime?.destroy();
   runtime = null;
@@ -139,6 +212,12 @@ onBeforeUnmount(() => {
     <div v-else-if="error" class="empty-overlay error" role="alert">
       <p>{{ error }}</p>
       <button @click="refresh">다시 시도</button>
+    </div>
+    <div v-else-if="contextLost" class="empty-overlay error" role="alert">
+      <p>
+        그래픽 연결이 끊겨 3D 화면을 일시 중지했습니다. 브라우저가 복구하면 자동으로 다시
+        표시됩니다.
+      </p>
     </div>
     <div v-else-if="isEmpty" class="empty-overlay">
       <p>이 층에 3D로 표시할 요소가 없습니다.</p>
@@ -157,40 +236,78 @@ onBeforeUnmount(() => {
       <span>벽 {{ wallCount }}개 · 공간 {{ spaceCount }}개 · 가구 {{ furnitureCount }}개</span>
       <span v-if="spaceCount === 0">공간을 추가하면 바닥도 표시됩니다.</span>
     </div>
-    <div v-if="!loading && !error && !isEmpty" class="view-controls">
+    <div v-if="!loading && !error && !contextLost && !isEmpty" class="view-controls">
       <span>드래그: 회전 · 휠: 확대·축소</span>
       <button @click="runtime?.fitView3D()">전체 보기</button>
       <span class="divider" />
       <label :class="{ inert: !canPlayRoute && !isPlaying }"
         >경로 모양
-        <select v-model="curve" :disabled="isPlaying || !canPlayRoute">
-          <option value="smooth">곡선</option>
+        <select v-model="curve" :disabled="!canPlayRoute && !isPlaying">
+          <option value="smooth">모서리 둥글게</option>
           <option value="straight">직선</option>
         </select>
       </label>
       <label :class="{ inert: !canPlayRoute && !isPlaying }"
-        >애니메이션
-        <select v-model="animationType" :disabled="isPlaying || !canPlayRoute">
-          <option value="marker">마커 이동</option>
-          <option value="flythrough">카메라 주행</option>
-        </select>
-      </label>
-      <label :class="{ inert: !canPlayRoute && !isPlaying }"
-        >시점
-        <select v-model="cameraMode" :disabled="isPlaying || !canPlayRoute">
-          <option value="third">3인칭</option>
+        >보기
+        <select
+          v-model="viewMode"
+          :disabled="isPlaying || !canPlayRoute"
+          :title="isPlaying ? '정지한 뒤 바꿀 수 있습니다' : ''"
+        >
+          <option value="overview">위에서 보기</option>
+          <option value="follow">따라가기</option>
           <option value="first">1인칭</option>
         </select>
       </label>
+      <label :class="{ inert: !canPlayRoute && !isPlaying }"
+        >속도
+        <select v-model.number="speed" :disabled="!canPlayRoute && !isPlaying">
+          <option v-for="s in SPEEDS" :key="s" :value="s">{{ s }}×</option>
+        </select>
+      </label>
       <button
-        :disabled="!canPlayRoute && !isPlaying"
+        v-if="!isPlaying"
+        :disabled="!canPlayRoute"
         :title="canPlayRoute ? '' : '경로 탭에서 경로를 먼저 계산하세요'"
-        @click="isPlaying ? stopAnimation() : playAnimation()"
+        @click="playAnimation"
       >
-        {{ isPlaying ? "■ 정지" : "▶ 경로 재생" }}
+        ▶ 경로 재생
       </button>
       <span v-if="!canPlayRoute && !isPlaying" class="route-needed-hint"
         >경로 탭에서 경로를 먼저 계산하세요</span
+      >
+    </div>
+    <div v-if="playback" class="playback-bar" role="group" aria-label="경로 재생">
+      <button
+        class="icon"
+        :aria-label="playback.paused ? '계속 재생' : '일시정지'"
+        :title="playback.paused ? '계속 재생' : '일시정지'"
+        @click="togglePause"
+      >
+        {{ playback.paused ? "▶" : "❚❚" }}
+      </button>
+      <button class="icon" aria-label="정지" title="정지" @click="stopAnimation">■</button>
+      <input
+        class="scrubber"
+        type="range"
+        min="0"
+        max="1000"
+        step="1"
+        aria-label="재생 위치"
+        :value="Math.round(playback.progress * 1000)"
+        @input="seek"
+      />
+      <span class="playback-meta">
+        {{ playback.distance.toFixed(0) }} / {{ playback.totalDistance.toFixed(0) }} m · 남은
+        {{ formatSeconds(playback.remainingSeconds) }}
+        <template v-if="playback.legCount > 1">
+          · {{ playbackFloorName || "다른 층" }} ({{ playback.legIndex + 1 }}/{{
+            playback.legCount
+          }})
+        </template>
+      </span>
+      <span v-if="playback.paused && viewMode !== 'overview'" class="playback-hint"
+        >일시정지 중에는 드래그로 둘러볼 수 있습니다</span
       >
     </div>
   </div>
@@ -283,6 +400,44 @@ onBeforeUnmount(() => {
 .view-controls select {
   font-size: 12px;
   padding: 4px 6px;
+}
+.playback-bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 70px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.playback-bar button.icon {
+  min-width: 34px;
+  padding: 6px 8px;
+}
+.scrubber {
+  flex: 1 1 200px;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+.playback-meta {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.playback-hint {
+  flex-basis: 100%;
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
 .route-needed-hint {
   color: var(--warning);

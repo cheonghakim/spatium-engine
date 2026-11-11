@@ -1,4 +1,6 @@
-export type { Point } from "./common.js";
+export type { Point, LocalizedText } from "./common.js";
+export type { Connector, ConnectorType, ConnectorStop, ConnectorSpec } from "./connector.js";
+export type { Site, GeoAnchor, SiteAddress } from "./site.js";
 export type { Space, SpaceType, SpaceProperties } from "./space.js";
 export type { Wall } from "./wall.js";
 export type { Entrance, EntranceType } from "./entrance.js";
@@ -13,4 +15,4 @@ export type {
   NavigationEdgeType,
   NavigationGraph,
 } from "./navigation.js";
-export type { Floor, Building, IndoorProject } from "./project.js";
+export type { Floor, Building, BuildingPlacement, IndoorProject } from "./project.js";

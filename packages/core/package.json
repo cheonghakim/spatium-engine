@@ -28,5 +28,8 @@
     "tsup": "^8.5.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "earcut": "^3.2.4"
   }
 }

@@ -1,13 +1,7 @@
-import type { Point } from "./common.js";
+import type { LocalizedText, Point } from "./common.js";
 
 export type POIType =
-  | "store"
-  | "restroom"
-  | "elevator"
-  | "stairs"
-  | "information"
-  | "exit"
-  | "custom";
+  "store" | "restroom" | "elevator" | "stairs" | "information" | "exit" | "custom";
 
 export interface POI {
   id: string;
@@ -20,6 +14,8 @@ export interface POI {
   type: POIType;
 
   name: string;
+  names?: LocalizedText;
+  externalId?: string;
 
   properties?: Record<string, unknown>;
 }

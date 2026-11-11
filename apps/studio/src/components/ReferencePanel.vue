@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { IndoorEditor } from "@indoor/editor";
-import { vectorizeReferenceImage } from "../canvas/vectorizeReference";
+import {
+  AnalysisCancelled,
+  AnalysisError,
+  startReferenceAnalysis,
+  type AnalysisJob,
+} from "../canvas/referenceAnalysis";
 
 const props = defineProps<{ editor: IndoorEditor }>();
 
@@ -15,6 +20,10 @@ defineExpose({ triggerUpload });
 const revision = ref(0);
 const vectorizing = ref(false);
 const vectorizeError = ref<string | null>(null);
+const vectorizeNotice = ref("");
+/** Monotonic id of the latest analysis request; results from any other id are stale and ignored. */
+let latestJobId = 0;
+let activeJob: AnalysisJob | null = null;
 const uploadError = ref("");
 const settings = reactive({
   autoThreshold: true,
@@ -47,6 +56,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   for (const unsubscribe of unsubscribers) unsubscribe();
+  cancelVectorize();
 });
 
 const reference = computed(() => {
@@ -87,20 +97,29 @@ async function autoVectorize(): Promise<void> {
   const floorId = props.editor.getActiveFloor()?.id;
   const source = props.editor.reference.current;
   if (!floorId || !source) return;
+  const ticket = ++latestJobId;
   vectorizeError.value = null;
+  vectorizeNotice.value = "";
   vectorizing.value = true;
   try {
-    // Yield a frame so the "분석 중..." state paints before the (synchronous, potentially slow) CV pass runs.
+    // Yield a frame so the "분석 중..." state (and the cancel button) paints before rasterizing.
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (ticket !== latestJobId) return;
     if (props.editor.getActiveFloor()?.id !== floorId || props.editor.reference.current !== source)
       return;
     const { threshold, ...rest } = settings;
-    const result = vectorizeReferenceImage(props.editor.reference, {
+    const job = startReferenceAnalysis(props.editor.reference, {
       ...rest,
       ...(settings.autoThreshold ? {} : { threshold }),
     });
-    if (!result) {
-      vectorizeError.value = "이미지를 아직 불러오는 중입니다. 잠시 후 다시 시도하세요.";
+    activeJob = job;
+    const result = await job.promise;
+    if (ticket !== latestJobId) return; // superseded or cancelled meanwhile
+    if (
+      props.editor.getActiveFloor()?.id !== floorId ||
+      props.editor.reference.current !== source
+    ) {
+      vectorizeNotice.value = "분석 중 도면이나 층이 바뀌어 결과를 적용하지 않았습니다.";
       return;
     }
     props.editor.draft.setDraft(
@@ -111,11 +130,28 @@ async function autoVectorize(): Promise<void> {
       result.elements,
     );
     props.editor.setTool("draft-review");
-  } catch {
-    vectorizeError.value = "도면 분석에 실패했습니다. 다른 이미지로 다시 시도하세요.";
+  } catch (error) {
+    if (ticket !== latestJobId || error instanceof AnalysisCancelled) return;
+    vectorizeError.value =
+      error instanceof AnalysisError
+        ? error.message
+        : "도면 분석에 실패했습니다. 다른 이미지로 다시 시도하세요.";
   } finally {
-    vectorizing.value = false;
+    if (ticket === latestJobId) {
+      vectorizing.value = false;
+      activeJob = null;
+    }
   }
+}
+
+/** Stops the running analysis (terminating its worker) and restores the panel so the user can retry. */
+function cancelVectorize(): void {
+  if (!vectorizing.value) return;
+  latestJobId++;
+  activeJob?.cancel();
+  activeJob = null;
+  vectorizing.value = false;
+  vectorizeNotice.value = "분석을 취소했습니다.";
 }
 </script>
 
@@ -200,9 +236,18 @@ async function autoVectorize(): Promise<void> {
       <p v-if="hasDraft" class="hint">
         다시 분석하면 현재 초안과 초안 수정 내역을 새 결과로 교체합니다. 확정된 지도는 유지됩니다.
       </p>
-      <button class="vectorize-button" :disabled="vectorizing" @click="autoVectorize">
-        {{ vectorizing ? "분석 중..." : hasDraft ? "다시 분석 (초안 교체)" : "자동 벡터화" }}
-      </button>
+      <div class="vectorize-row">
+        <button class="vectorize-button" :disabled="vectorizing" @click="autoVectorize">
+          {{ vectorizing ? "분석 중..." : hasDraft ? "다시 분석 (초안 교체)" : "자동 벡터화" }}
+        </button>
+        <button v-if="vectorizing" class="cancel-button" @click="cancelVectorize">취소</button>
+      </div>
+      <p v-if="vectorizing" class="hint" role="status">
+        도면을 분석하는 중입니다. 큰 이미지는 축소해 분석하며, 언제든 취소할 수 있습니다.
+      </p>
+      <p v-else-if="vectorizeNotice" class="hint" role="status">
+        {{ vectorizeNotice }}
+      </p>
       <p class="hint">
         수평·수직 벽을 감지합니다. 사선·곡선 벽은 직접 그려 보완해 주세요. 투명도와 화면 격자는 감지
         결과에 영향을 주지 않습니다.
@@ -211,7 +256,7 @@ async function autoVectorize(): Promise<void> {
         문·창문으로 쓸 벽 사이 틈과 계단 후보도 찾습니다. 먼저 축척을 보정하고, 검토 탭에서 후보
         종류·치수·상행 방향을 확인하세요.
       </p>
-      <p v-if="vectorizeError" class="error-text">
+      <p v-if="vectorizeError" class="error-text" role="alert">
         {{ vectorizeError }}
       </p>
 
@@ -344,6 +389,17 @@ h3 {
 }
 .vectorize-button:hover:not(:disabled) {
   background: var(--success-border);
+}
+.vectorize-row {
+  display: flex;
+  gap: 6px;
+}
+.vectorize-row .vectorize-button {
+  flex: 1;
+}
+.cancel-button {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 .error-text {
   margin: 0;

@@ -11,6 +11,8 @@ export type { SelectionEntry } from "./selection/SelectionManager.js";
 export { findObjectKind } from "./selection/findObjectKind.js";
 export type { SelectableKind } from "./selection/findObjectKind.js";
 export { locateObject } from "./selection/locateObject.js";
+export { marqueeMode, marqueeRect } from "./selection/marquee.js";
+export type { Marquee, MarqueeMode } from "./selection/marquee.js";
 export type { ObjectLocation } from "./selection/locateObject.js";
 
 export { ReferenceManager } from "./reference/ReferenceManager.js";
@@ -18,7 +20,13 @@ export type { ReferenceLayerState } from "./reference/ReferenceManager.js";
 
 export { DraftManager } from "./draft/DraftManager.js";
 export type { DraftElementEntry, DraftElementInput } from "./draft/DraftManager.js";
-export type { DraftState, DraftWallEntry, DraftSpaceEntry, DraftWallInput, DraftSpaceInput } from "./draft/DraftManager.js";
+export type {
+  DraftState,
+  DraftWallEntry,
+  DraftSpaceEntry,
+  DraftWallInput,
+  DraftSpaceInput,
+} from "./draft/DraftManager.js";
 
 export { LayerVisibilityManager } from "./layers/LayerVisibilityManager.js";
 export type { LayerId } from "./layers/LayerVisibilityManager.js";

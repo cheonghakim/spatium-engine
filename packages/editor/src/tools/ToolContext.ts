@@ -1,4 +1,4 @@
-import type { Floor } from "@indoor/core";
+import type { Building, Floor } from "@indoor/core";
 import type { Command } from "../commands/Command.js";
 import type { EditorCamera } from "../camera/EditorCamera.js";
 import type { SelectionManager } from "../selection/SelectionManager.js";
@@ -29,4 +29,6 @@ export interface ToolContext {
    * search every floor of the owning building, not just the active one.
    */
   findNodeBuilding(nodeId: string): readonly Floor[] | undefined;
+  /** The building owning a floor — lets deletes clean up connector stops. Optional for tests. */
+  findFloorBuilding?(floorId: string): Building | undefined;
 }

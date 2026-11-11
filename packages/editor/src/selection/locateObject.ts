@@ -65,5 +65,20 @@ export function locateObject(project: IndoorProject, id: string): ObjectLocation
       if (position) return { floorId: floor.id, position };
     }
   }
+  // Outdoor nodes/edges live on the site plane (floorId = site.id).
+  const site = project.site;
+  if (site) {
+    const plane = {
+      spaces: [],
+      walls: [],
+      entrances: [],
+      pois: [],
+      furniture: [],
+      groups: [],
+      navigation: site.navigation,
+    } as unknown as Floor;
+    const position = locatePrimitive(plane, id);
+    if (position) return { floorId: site.id, position };
+  }
   return null;
 }

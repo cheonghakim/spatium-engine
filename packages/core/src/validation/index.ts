@@ -9,3 +9,10 @@ export {
   validateNavigation,
   validateWalls,
 } from "./rules.js";
+export {
+  validateConnectors,
+  validateFloorLinkDuplicates,
+  validateSite,
+  validateExternalIds,
+  connectorConnectivityEdges,
+} from "./structure.js";

@@ -1,8 +1,9 @@
+import earcut from "earcut";
 import type { Point } from "../types/common.js";
 import { segmentIntersection, type Line } from "./line.js";
 import { distanceToSegment } from "./distance.js";
 import { boundingBoxOfPoints, boundingBoxesIntersect } from "./boundingBox.js";
-import { cross, normalize, subtract } from "./vector2.js";
+import { normalize, subtract } from "./vector2.js";
 
 /**
  * Signed area (shoelace formula). Positive = counter-clockwise winding.
@@ -86,7 +87,7 @@ export type Triangle = [Point, Point, Point];
 
 /**
  * Small absolute tolerance (in coordinate units) used throughout
- * triangulation and triangle-overlap testing to treat near-zero cross
+ * triangle-overlap testing to treat near-zero cross
  * products / separations as exactly zero. At the coordinate scales this
  * geometry package is meant for (architectural floor plans — meters or
  * millimeters, roughly 1e-2 to 1e4 in magnitude), 1e-9 is many orders of
@@ -97,122 +98,44 @@ export type Triangle = [Point, Point, Point];
 const GEOMETRY_EPSILON = 1e-9;
 
 /**
- * True if `curr` is a convex (non-reflex) vertex of a polygon ring in
- * counter-clockwise winding, i.e. the turn from `prev`->`curr`->`next` is a
- * left turn (or the three points are collinear, which is harmless to treat
- * as convex here since ear-clipping never *requires* a candidate ear to
- * have a strictly positive angle — a zero-area ear is simply discarded
- * later if it happens to be picked, but excluding collinear points from
- * candidacy entirely can wrongly stall clipping on inputs with repeated or
- * collinear vertices).
- */
-function isConvexVertex(prev: Point, curr: Point, next: Point): boolean {
-  return cross(subtract(curr, prev), subtract(next, curr)) >= -GEOMETRY_EPSILON;
-}
-
-/**
- * True if `p` lies inside or on the boundary of triangle (a, b, c),
- * regardless of the triangle's winding order. Used by ear-clipping to test
- * whether a candidate ear contains another vertex of the polygon (which
- * would make it an invalid ear to clip) — boundary-inclusive on purpose,
- * so a vertex lying exactly on a candidate ear's edge (collinear points)
- * still disqualifies it, keeping the resulting triangulation non-overlapping.
- */
-function isPointInOrOnTriangle(p: Point, a: Point, b: Point, c: Point): boolean {
-  const d1 = cross(subtract(b, a), subtract(p, a));
-  const d2 = cross(subtract(c, b), subtract(p, b));
-  const d3 = cross(subtract(a, c), subtract(p, c));
-
-  const hasNeg = d1 < -GEOMETRY_EPSILON || d2 < -GEOMETRY_EPSILON || d3 < -GEOMETRY_EPSILON;
-  const hasPos = d1 > GEOMETRY_EPSILON || d2 > GEOMETRY_EPSILON || d3 > GEOMETRY_EPSILON;
-  return !(hasNeg && hasPos);
-}
-
-/**
- * Decomposes a simple (non-self-intersecting) polygon, convex or concave,
- * into triangles via standard ear clipping: repeatedly find a convex vertex
- * whose triangle with its two ring-neighbors ("ear") contains no other
- * polygon vertex, clip it off (remove it from the ring and record the
- * triangle), and repeat until 3 vertices remain. Every simple polygon has
- * at least two clippable ears at every step (a classical result), so this
- * always terminates with a complete triangulation whose triangles exactly
- * partition the polygon's area with no gaps or overlaps between them.
+ * Decomposes a simple polygon, convex or concave and optionally with holes,
+ * into triangles. Backed by earcut (Mapbox, ISC — see THIRD_PARTY_NOTICES.md),
+ * which handles holes and runs in roughly O(n log n) via z-order hashing,
+ * replacing the earlier hand-rolled O(n^3) ear clipper.
  *
- * Winding is normalized to counter-clockwise up front (via polygonArea's
- * sign) because the convexity test needs to know which turn direction is
- * "convex" — without normalizing, a clockwise-wound input would have its
- * convex/reflex vertices exactly backwards.
+ * Winding of the outer ring and holes doesn't matter. Each hole is a ring
+ * lying inside `polygon`; the triangles cover the polygon minus the holes.
+ * Zero-area (collinear) triangles are dropped, so for a simple n-gon without
+ * holes or collinear runs this returns n-2 triangles.
  *
- * Precondition: `polygon` must not be self-intersecting (see
- * isPolygonSelfIntersecting) — ear clipping is only defined for simple
- * polygons. Returns [] for fewer than 3 points.
+ * Precondition: rings must not self-intersect or cross each other (see
+ * isPolygonSelfIntersecting). Earcut still terminates on such input but may
+ * leave parts uncovered. Returns [] when the outer ring has fewer than 3 points.
  */
-export function triangulate(polygon: Point[]): Triangle[] {
+export function triangulate(polygon: Point[], holes: Point[][] = []): Triangle[] {
   if (polygon.length < 3) return [];
-  if (polygon.length === 3) {
-    return [[polygon[0] as Point, polygon[1] as Point, polygon[2] as Point]];
+
+  const rings = [polygon, ...holes.filter((hole) => hole.length >= 3)];
+  const vertices: Point[] = [];
+  const coords: number[] = [];
+  const holeIndices: number[] = [];
+  for (const [ringIndex, ring] of rings.entries()) {
+    if (ringIndex > 0) holeIndices.push(vertices.length);
+    for (const p of ring) {
+      vertices.push(p);
+      coords.push(p.x, p.y);
+    }
   }
 
-  const ring = polygonArea(polygon) < 0 ? [...polygon].reverse() : [...polygon];
-  let indices = ring.map((_, i) => i);
+  const indices = earcut(coords, holeIndices.length > 0 ? holeIndices : null);
   const triangles: Triangle[] = [];
-
-  // Each successful clip removes exactly one index; this bounds the total
-  // number of clip attempts (successful or not) so a pathological input
-  // (e.g. one that violates the simple-polygon precondition) can't spin
-  // forever — it just stops short with a partial-but-valid triangle set.
-  const maxAttempts = ring.length * ring.length + 8;
-  let attempts = 0;
-
-  while (indices.length > 3 && attempts < maxAttempts) {
-    attempts++;
-    const n = indices.length;
-    let clippedIndex = -1;
-
-    for (let i = 0; i < n; i++) {
-      const iPrev = indices[(i - 1 + n) % n] as number;
-      const iCurr = indices[i] as number;
-      const iNext = indices[(i + 1) % n] as number;
-      const prev = ring[iPrev] as Point;
-      const curr = ring[iCurr] as Point;
-      const next = ring[iNext] as Point;
-
-      if (!isConvexVertex(prev, curr, next)) continue;
-
-      const containsOtherVertex = indices.some((idx) => {
-        if (idx === iPrev || idx === iCurr || idx === iNext) return false;
-        return isPointInOrOnTriangle(ring[idx] as Point, prev, curr, next);
-      });
-      if (containsOtherVertex) continue;
-
-      triangles.push([prev, curr, next]);
-      clippedIndex = i;
-      break;
-    }
-
-    if (clippedIndex === -1) {
-      // No strictly-valid ear this pass (can happen with degenerate
-      // floating-point configurations, e.g. several collinear vertices in a
-      // row) — clip the first vertex anyway so triangulation always
-      // terminates with a full triangle set rather than dropping area.
-      const iPrev = indices[n - 1] as number;
-      const iCurr = indices[0] as number;
-      const iNext = indices[1] as number;
-      triangles.push([ring[iPrev] as Point, ring[iCurr] as Point, ring[iNext] as Point]);
-      clippedIndex = 0;
-    }
-
-    indices = indices.filter((_, i) => i !== clippedIndex);
-  }
-
-  if (indices.length === 3) {
+  for (let i = 0; i + 2 < indices.length; i += 3) {
     triangles.push([
-      ring[indices[0] as number] as Point,
-      ring[indices[1] as number] as Point,
-      ring[indices[2] as number] as Point,
+      vertices[indices[i] as number] as Point,
+      vertices[indices[i + 1] as number] as Point,
+      vertices[indices[i + 2] as number] as Point,
     ]);
   }
-
   return triangles;
 }
 
@@ -283,7 +206,7 @@ export function trianglesOverlap(t1: Triangle, t2: Triangle): boolean {
 }
 
 /**
- * True if the two (simple) polygons overlap — i.e. their interiors share a
+ * True if the two (simple) polygons — optionally with holes — overlap — i.e. their interiors share a
  * positive-area region — rather than merely touching along a shared edge or
  * a shared corner.
  *
@@ -315,15 +238,22 @@ export function trianglesOverlap(t1: Triangle, t2: Triangle): boolean {
  * area, at any orientation, for any winding or convexity, because SAT over a
  * polygon's full triangulation is exact for the area it actually measures.
  */
-export function polygonsOverlap(a: Point[], b: Point[]): boolean {
+export function polygonsOverlap(
+  a: Point[],
+  b: Point[],
+  holesA: Point[][] = [],
+  holesB: Point[][] = [],
+): boolean {
   if (a.length < 3 || b.length < 3) return false;
 
   const boxA = boundingBoxOfPoints(a);
   const boxB = boundingBoxOfPoints(b);
   if (!boundingBoxesIntersect(boxA, boxB)) return false;
 
-  const trianglesA = triangulate(a);
-  const trianglesB = triangulate(b);
+  // Holes are excluded from the triangulation, so a space sitting inside
+  // another's hole (a kiosk in an atrium void) doesn't count as overlapping.
+  const trianglesA = triangulate(a, holesA);
+  const trianglesB = triangulate(b, holesB);
 
   for (const triA of trianglesA) {
     for (const triB of trianglesB) {
@@ -346,4 +276,108 @@ export function nearestPointOnPolygon(
     }
   }
   return best ?? { point, distance: 0 };
+}
+
+/** Area of a polygon minus its holes (always non-negative). */
+export function polygonWithHolesArea(polygon: Point[], holes: Point[][] = []): number {
+  const outer = Math.abs(polygonArea(polygon));
+  const removed = holes.reduce((sum, hole) => sum + Math.abs(polygonArea(hole)), 0);
+  return Math.max(0, outer - removed);
+}
+
+/**
+ * Inside the outer ring and not strictly inside any hole. Like
+ * isPointInPolygon, boundaries are fuzzy — a point on a hole's edge may land
+ * either way.
+ */
+export function isPointInPolygonWithHoles(
+  point: Point,
+  polygon: Point[],
+  holes: Point[][] = [],
+): boolean {
+  if (!isPointInPolygon(point, polygon)) return false;
+  return !holes.some((hole) => hole.length >= 3 && isPointInPolygon(point, hole));
+}
+
+/** Holed-polygon helpers for a Space-like object. */
+export function spaceArea(space: { polygon: Point[]; holes?: Point[][] }): number {
+  return polygonWithHolesArea(space.polygon, space.holes);
+}
+
+export function isPointInSpace(
+  space: { polygon: Point[]; holes?: Point[][] },
+  point: Point,
+): boolean {
+  return isPointInPolygonWithHoles(point, space.polygon, space.holes);
+}
+
+/** Problems with a polygon's holes, in the order found; [] when all are fine. */
+export type HoleProblem =
+  | { kind: "too-few-vertices"; holeIndex: number }
+  | { kind: "self-intersecting"; holeIndex: number }
+  | { kind: "outside-outer"; holeIndex: number }
+  | { kind: "holes-overlap"; holeIndex: number; otherIndex: number };
+
+export function findHoleProblems(polygon: Point[], holes: Point[][] = []): HoleProblem[] {
+  const problems: HoleProblem[] = [];
+  const valid: number[] = [];
+  const outerEdges = polygonEdges(polygon);
+  holes.forEach((hole, holeIndex) => {
+    if (hole.length < 3) {
+      problems.push({ kind: "too-few-vertices", holeIndex });
+      return;
+    }
+    if (isPolygonSelfIntersecting(hole)) {
+      problems.push({ kind: "self-intersecting", holeIndex });
+      return;
+    }
+    const crossesOuter = polygonEdges(hole).some((edge) =>
+      outerEdges.some((outer) => segmentIntersection(edge, outer)),
+    );
+    if (crossesOuter || !hole.every((p) => isPointInPolygon(p, polygon))) {
+      problems.push({ kind: "outside-outer", holeIndex });
+      return;
+    }
+    valid.push(holeIndex);
+  });
+  for (let i = 0; i < valid.length; i++) {
+    for (let j = i + 1; j < valid.length; j++) {
+      const a = holes[valid[i]!]!;
+      const b = holes[valid[j]!]!;
+      if (polygonsOverlap(a, b)) {
+        problems.push({ kind: "holes-overlap", holeIndex: valid[i]!, otherIndex: valid[j]! });
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * Convex hull (Andrew's monotone chain), counter-clockwise, without repeating
+ * the first point. Fewer than 3 distinct non-collinear points give whatever
+ * remains (possibly fewer than 3 points).
+ */
+export function convexHull(points: readonly Point[]): Point[] {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  if (sorted.length < 3) return sorted;
+  const turn = (o: Point, a: Point, b: Point): number =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Point[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && turn(lower[lower.length - 2]!, lower[lower.length - 1]!, p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Point[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i]!;
+    while (upper.length >= 2 && turn(upper[upper.length - 2]!, upper[upper.length - 1]!, p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
 }

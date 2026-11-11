@@ -1,5 +1,14 @@
 import { distance, distanceToSegment, isPointInPolygon, type Point } from "@indoor/core";
-import type { DraftManager } from "../draft/DraftManager.js";
+import type { DraftManager, DraftState } from "../draft/DraftManager.js";
+import {
+  MARQUEE_THRESHOLD_PX,
+  marqueeMode,
+  marqueeRect,
+  pointInRect,
+  polygonInMarquee,
+  segmentInMarquee,
+  type Marquee,
+} from "../selection/marquee.js";
 import type { EditorKeyboardEvent, EditorPointerEvent, EditorTool } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
 
@@ -7,9 +16,28 @@ type Drag =
   | { id: string; start: Point; end: Point; origin: Point; handle: "start" | "end" | "body" }
   | { id: string; vertex: number };
 
+interface PendingMarquee extends Marquee {
+  startScreen: Point;
+  active: boolean;
+  additive: boolean;
+  base: readonly string[];
+}
+
+/** Draft entries the box picks: window (left→right) = fully inside, crossing (right→left) = touched. */
+function draftIdsInMarquee(state: DraftState, marquee: Marquee): string[] {
+  const rect = marqueeRect(marquee),
+    mode = marqueeMode(marquee);
+  return [
+    ...state.elements.filter((e) => pointInRect(e.position, rect)).map((e) => e.id),
+    ...state.walls.filter((w) => segmentInMarquee(w.start, w.end, rect, mode)).map((w) => w.id),
+    ...state.spaces.filter((s) => polygonInMarquee(s.polygon, rect, mode)).map((s) => s.id),
+  ];
+}
+
 export class DraftReviewTool implements EditorTool {
   readonly id = "draft-review";
   private drag: Drag | null = null;
+  private marquee: PendingMarquee | null = null;
   constructor(
     private readonly context: ToolContext,
     private readonly draft: DraftManager,
@@ -19,20 +47,29 @@ export class DraftReviewTool implements EditorTool {
   }
   deactivate(): void {
     this.drag = null;
+    this.marquee = null;
     this.draft.cancelEdit();
+  }
+  /** The rubber-band box being dragged (world coordinates), for the canvas overlay. */
+  getMarquee(): Marquee | null {
+    return this.marquee?.active ? { start: this.marquee.start, end: this.marquee.end } : null;
   }
   onPointerDown(event: EditorPointerEvent): void {
     if (event.button !== 0) return;
     const state = this.draft.current;
     if (!state || (state.floorId && state.floorId !== this.context.getActiveFloor()?.id)) return;
     const radius = 10 / this.context.camera.getState().zoom;
+    // Shift or Ctrl toggles entries in/out of the selection instead of replacing it.
+    const additive = event.shiftKey || event.ctrlKey;
+    const base = [...this.draft.selectedIds];
     const element = state.elements.find((e) => distance(e.position, event.worldPoint) <= radius);
     if (element) {
-      this.draft.select(element.id);
+      if (additive) this.draft.toggleSelected(element.id);
+      else this.draft.select(element.id);
       return;
     }
     const selectedWall = state.walls.find((w) => w.id === this.draft.selectedId);
-    if (selectedWall) {
+    if (selectedWall && !additive) {
       const handle =
         distance(selectedWall.start, event.worldPoint) <= radius
           ? "start"
@@ -53,7 +90,7 @@ export class DraftReviewTool implements EditorTool {
     }
     const space = state.spaces.find((s) => s.id === this.draft.selectedId);
     const vertex = space?.polygon.findIndex((p) => distance(p, event.worldPoint) <= radius) ?? -1;
-    if (space && vertex >= 0) {
+    if (space && vertex >= 0 && !additive) {
       this.drag = { id: space.id, vertex };
       this.draft.beginEdit();
       return;
@@ -66,6 +103,10 @@ export class DraftReviewTool implements EditorTool {
       .filter((hit) => hit.d <= radius)
       .sort((a, b) => a.d - b.d);
     const wall = walls[0]?.wall;
+    if (wall && additive) {
+      this.draft.toggleSelected(wall.id);
+      return;
+    }
     if (wall) {
       this.draft.select(wall.id);
       this.drag = {
@@ -86,9 +127,34 @@ export class DraftReviewTool implements EditorTool {
     const hit = [...state.spaces]
       .reverse()
       .find((s) => isPointInPolygon(event.worldPoint, s.polygon));
-    this.draft.select(hit?.id ?? null);
+    if (additive) {
+      if (hit) this.draft.toggleSelected(hit.id);
+    } else this.draft.select(hit?.id ?? null);
+    // Pressing inside a room or on empty canvas and dragging draws a selection box.
+    this.marquee = {
+      start: { ...event.worldPoint },
+      end: { ...event.worldPoint },
+      startScreen: { ...event.screenPoint },
+      active: false,
+      additive,
+      base,
+    };
   }
   onPointerMove(event: EditorPointerEvent): void {
+    if (this.marquee) {
+      const marquee = this.marquee;
+      marquee.end = { ...event.worldPoint };
+      if (
+        !marquee.active &&
+        Math.hypot(
+          event.screenPoint.x - marquee.startScreen.x,
+          event.screenPoint.y - marquee.startScreen.y,
+        ) >= MARQUEE_THRESHOLD_PX
+      )
+        marquee.active = true;
+      if (marquee.active) this.context.requestRender();
+      return;
+    }
     const drag = this.drag;
     if (!drag) return;
     let point = event.worldPoint;
@@ -143,22 +209,30 @@ export class DraftReviewTool implements EditorTool {
     this.draft.updateWall(drag.id, start, end);
   }
   onPointerUp(): void {
+    const marquee = this.marquee;
+    this.marquee = null;
+    if (marquee) {
+      const state = this.draft.current;
+      if (marquee.active && state) {
+        const ids = draftIdsInMarquee(state, marquee);
+        this.draft.setSelection(marquee.additive ? [...marquee.base, ...ids] : ids);
+      }
+      return;
+    }
     this.drag = null;
     this.draft.commitEdit();
   }
   onKeyDown(event: EditorKeyboardEvent): void {
     if (event.key === "Escape") {
-      this.deactivate();
+      // First Escape cancels an in-progress drag/box; the next one clears the selection.
+      if (this.drag || this.marquee) this.deactivate();
+      else this.draft.select(null);
+      this.context.requestRender();
       return;
     }
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     this.deactivate();
-    const id = this.draft.selectedId;
-    const wall = this.draft.current?.walls.find((w) => w.id === id);
-    const space = this.draft.current?.spaces.find((s) => s.id === id);
-    if (wall?.accepted) this.draft.toggleWall(wall.id);
-    if (space?.accepted) this.draft.toggleSpace(space.id);
-    const element = this.draft.current?.elements.find((e) => e.id === id);
-    if (element?.accepted) this.draft.toggleElement(element.id);
+    // Excludes every selected entry in one undoable step.
+    this.draft.setAccepted(this.draft.selectedIds, false);
   }
 }

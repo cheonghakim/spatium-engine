@@ -42,6 +42,7 @@ describe("validateBuilderConfig", () => {
             curve: "smooth",
             durationSeconds: 5,
           },
+          { type: "route.playAnimation", cameraMode: "overview", speed: 1.5 },
           { type: "route.stopAnimation" },
           { type: "url.open", url: "https://example.com" },
           { type: "event.emit", name: "custom" },
@@ -78,6 +79,27 @@ describe("validateBuilderConfig", () => {
     const issues = validateBuilderConfig(config);
 
     expect(issues.some((i) => i.includes("route.start") && i.includes("toNodeId"))).toBe(true);
+  });
+
+  it("accepts route.start endpoints and flags malformed ones", () => {
+    const ok = baseConfig([
+      {
+        event: "map.loaded",
+        actions: [
+          { type: "route.start", from: "a", to: { poiId: "p" } },
+          { type: "route.start", from: { floorId: "f", position: { x: 1, y: 2 } }, toNodeId: "b" },
+        ],
+      },
+    ]);
+    expect(validateBuilderConfig(ok)).toEqual([]);
+
+    const bad = baseConfig([
+      {
+        event: "map.loaded",
+        actions: [{ type: "route.start", from: { floorId: "f" }, to: "b" } as never],
+      },
+    ]);
+    expect(validateBuilderConfig(bad).some((i) => i.includes('"from" must be'))).toBe(true);
   });
 
   it("flags a missing required field on url.open", () => {
@@ -126,6 +148,16 @@ describe("validateBuilderConfig", () => {
     const issues = validateBuilderConfig(config);
 
     expect(issues.some((i) => i.includes("route.playAnimation") && i.includes("curve"))).toBe(true);
+  });
+
+  it("flags a non-positive speed on route.playAnimation", () => {
+    const config = baseConfig([
+      { event: "map.loaded", actions: [{ type: "route.playAnimation", speed: 0 }] },
+    ]);
+
+    const issues = validateBuilderConfig(config);
+
+    expect(issues.some((i) => i.includes("route.playAnimation") && i.includes("speed"))).toBe(true);
   });
 
   it("flags an unrecognized action type", () => {

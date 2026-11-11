@@ -1,5 +1,9 @@
 import { createId } from "../id.js";
-import { isPolygonSelfIntersecting, polygonsOverlap } from "../geometry/polygon.js";
+import {
+  findHoleProblems,
+  isPolygonSelfIntersecting,
+  polygonsOverlap,
+} from "../geometry/polygon.js";
 import { distance } from "../geometry/distance.js";
 import type { Floor } from "../types/project.js";
 import type { Space } from "../types/space.js";
@@ -58,6 +62,20 @@ export function validateSpaces(floor: Floor): ValidationIssue[] {
       );
     }
 
+    for (const problem of findHoleProblems(space.polygon, space.holes)) {
+      const label = space.properties.name ?? space.id;
+      const hole = `hole ${problem.holeIndex + 1}`;
+      const detail =
+        problem.kind === "too-few-vertices"
+          ? `${hole} has fewer than 3 vertices`
+          : problem.kind === "self-intersecting"
+            ? `${hole} self-intersects`
+            : problem.kind === "outside-outer"
+              ? `${hole} is not inside the outer boundary`
+              : `${hole} overlaps hole ${problem.otherIndex + 1}`;
+      issues.push(issue("error", "invalid-hole", `Space "${label}": ${detail}.`, space.id));
+    }
+
     if (space.type === "unknown") {
       issues.push(
         issue(
@@ -78,7 +96,7 @@ export function validateSpaces(floor: Floor): ValidationIssue[] {
       const spaceB = floor.spaces[j] as Space;
       if (spaceB.polygon.length < 3) continue;
 
-      if (polygonsOverlap(spaceA.polygon, spaceB.polygon)) {
+      if (polygonsOverlap(spaceA.polygon, spaceB.polygon, spaceA.holes, spaceB.holes)) {
         issues.push(
           issue(
             "error",

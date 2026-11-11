@@ -5,5 +5,13 @@ export {
   SchemaVersionMismatchError,
   InvalidProjectDataError,
 } from "./serialize.js";
+export { migrateProjectData, compareSchemaVersions, MIGRATIONS } from "./migrations.js";
+export type { ProjectMigration, RawProjectData } from "./migrations.js";
 export { projectToGeoJSON } from "./geojson.js";
-export type { GeoJSONFeature, GeoJSONFeatureCollection, GeoJSONPosition } from "./geojson.js";
+export type {
+  GeoJSONCoordinateMode,
+  GeoJSONExportOptions,
+  GeoJSONFeature,
+  GeoJSONFeatureCollection,
+  GeoJSONPosition,
+} from "./geojson.js";

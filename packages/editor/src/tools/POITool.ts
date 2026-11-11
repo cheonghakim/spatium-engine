@@ -1,4 +1,4 @@
-import { createPOI, isPointInPolygon } from "@indoor/core";
+import { createPOI, isPointInSpace } from "@indoor/core";
 import { AddPOICommand } from "../commands/POICommands.js";
 import type { EditorTool, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
@@ -18,7 +18,7 @@ export class POITool implements EditorTool {
     if (!floor) return;
 
     const point = this.context.snapping.resolve(event.worldPoint, { floor });
-    const containingSpace = floor.spaces.find((space) => isPointInPolygon(point, space.polygon));
+    const containingSpace = floor.spaces.find((space) => isPointInSpace(space, point));
 
     const poi = createPOI(floor.id, point, "custom", `POI ${floor.pois.length + 1}`);
     if (containingSpace) poi.spaceId = containingSpace.id;

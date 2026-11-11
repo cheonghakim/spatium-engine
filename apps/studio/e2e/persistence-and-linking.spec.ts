@@ -103,16 +103,17 @@ test("links stairs nodes across floors from the property panel and routes betwee
   await page.getByRole("button", { name: "경로", exact: true }).click();
   const route = page.locator(".route-panel");
   await expect(
-    route.getByRole("combobox", { name: "출발 노드", exact: true }).getByRole("option"),
+    route.getByRole("combobox", { name: "출발지", exact: true }).getByRole("option"),
   ).toHaveCount(3);
-  await route.getByRole("combobox", { name: "출발 노드", exact: true }).selectOption({ index: 1 });
-  await route.getByRole("combobox", { name: "도착 노드", exact: true }).selectOption({ index: 2 });
+  await route.getByRole("combobox", { name: "출발지", exact: true }).selectOption({ index: 1 });
+  await route.getByRole("combobox", { name: "도착지", exact: true }).selectOption({ index: 2 });
   await route.getByRole("button", { name: "경로 찾기", exact: true }).click();
 
   const result = route.locator(".result");
   await expect(result).toBeVisible();
   await expect(result).not.toHaveClass(/error/);
   await expect(result).toContainText("거리");
+  await expect(result).toContainText("예상 소요");
 
   expect(errors).toEqual([]);
 });

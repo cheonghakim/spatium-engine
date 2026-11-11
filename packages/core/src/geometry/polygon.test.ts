@@ -538,6 +538,67 @@ describe("triangulate", () => {
   });
 });
 
+describe("triangulate with holes", () => {
+  const outer = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ];
+  const column = [
+    { x: 4, y: 4 },
+    { x: 6, y: 4 },
+    { x: 6, y: 6 },
+    { x: 4, y: 6 },
+  ];
+
+  function covers(triangles: Triangle[], p: { x: number; y: number }): boolean {
+    return triangles.some(([a, b, c]) => {
+      const d1 = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+      const d2 = (c.x - b.x) * (p.y - b.y) - (p.x - b.x) * (c.y - b.y);
+      const d3 = (a.x - c.x) * (p.y - c.y) - (p.x - c.x) * (a.y - c.y);
+      return (d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0);
+    });
+  }
+
+  it("covers the outer area minus the hole", () => {
+    const result = triangulate(outer, [column]);
+    expect(triangulatedArea(result)).toBeCloseTo(100 - 4);
+    expect(covers(result, { x: 5, y: 5 })).toBe(false);
+    expect(covers(result, { x: 1, y: 2.5 })).toBe(true);
+  });
+
+  it("is winding-agnostic for both outer ring and holes", () => {
+    const result = triangulate([...outer].reverse(), [[...column].reverse()]);
+    expect(triangulatedArea(result)).toBeCloseTo(96);
+  });
+
+  it("handles several holes and ignores degenerate ones", () => {
+    const second = column.map((p) => ({ x: p.x - 3, y: p.y - 3 }));
+    const degenerate = [
+      { x: 8, y: 8 },
+      { x: 9, y: 8 },
+    ];
+    const result = triangulate(outer, [column, second, degenerate]);
+    expect(triangulatedArea(result)).toBeCloseTo(100 - 4 - 4);
+  });
+
+  it("triangulates a 10,000-vertex polygon quickly", () => {
+    const n = 10_000;
+    const points = Array.from({ length: n }, (_, i) => {
+      const angle = (i / n) * Math.PI * 2;
+      const r = i % 2 === 0 ? 100 : 90;
+      return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+    });
+    const start = performance.now();
+    const result = triangulate(points);
+    const elapsedMs = performance.now() - start;
+    expect(result.length).toBe(n - 2);
+    expect(triangulatedArea(result)).toBeCloseTo(Math.abs(polygonArea(points)), 3);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+});
+
 describe("trianglesOverlap", () => {
   it("reports overlapping triangles that genuinely interpenetrate", () => {
     const t1: Triangle = [

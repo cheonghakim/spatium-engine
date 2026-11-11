@@ -1,4 +1,5 @@
 export { IndoorBuilder, RUNTIME_EVENT_NAMES } from "./IndoorBuilder.js";
+export { BuilderControls } from "./controls.js";
 export type { IndoorBuilderOptions, BuilderEventMap } from "./IndoorBuilder.js";
 export type { BuilderConfig, BuilderCameraConfig, BuilderControlsConfig } from "./BuilderConfig.js";
 export type { RuntimeTheme } from "@indoor/runtime";

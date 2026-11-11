@@ -4,6 +4,7 @@ import {
   createBuilding,
   createEmptyProject,
   createFloor,
+  compareSchemaVersions,
   deserializeProject,
   InvalidProjectDataError,
   projectToGeoJSON,
@@ -21,6 +22,7 @@ import {
   mdiCropFree,
   mdiCubeOutline,
   mdiCursorDefault,
+  mdiCursorMove,
   mdiDeleteSweepOutline,
   mdiDoor,
   mdiFilePlusOutline,
@@ -31,6 +33,7 @@ import {
   mdiMagnifyMinusOutline,
   mdiMagnifyPlusOutline,
   mdiMapMarker,
+  mdiMapOutline,
   mdiMenuDown,
   mdiRedo,
   mdiRoutes,
@@ -42,6 +45,7 @@ import {
   mdiUndo,
   mdiUngroup,
   mdiVectorCombine,
+  mdiVectorDifferenceAb,
   mdiWall,
 } from "@mdi/js";
 import MdiIcon from "./components/MdiIcon.vue";
@@ -55,7 +59,9 @@ import PropertyPanel from "./components/PropertyPanel.vue";
 import FloorSwitcher from "./components/FloorSwitcher.vue";
 import BuildingSwitcher from "./components/BuildingSwitcher.vue";
 import RoutePanel from "./components/RoutePanel.vue";
+import ImdfExportDialog from "./components/ImdfExportDialog.vue";
 import ValidationPanel from "./components/ValidationPanel.vue";
+import OpenSourceNotices from "./components/OpenSourceNotices.vue";
 
 const AUTOSAVE_KEY = "spatium-studio:autosave";
 
@@ -124,6 +130,11 @@ const ui = reactive({
 
 const show3d = ref(false);
 function toggle3d(): void {
+  // The 3D preview shows one building floor; leave the site view for the active building's first floor.
+  if (!show3d.value && editor.isSiteView()) {
+    const floor = activeBuilding.value?.floors[0];
+    if (floor) editor.setFloor(floor.id);
+  }
   show3d.value = !show3d.value;
 }
 
@@ -161,30 +172,189 @@ function onProjectLoaded(): void {
   panel.value = "properties";
 }
 
-function hasUnsavedContent(): boolean {
-  return currentProject.value.buildings.some((b) =>
-    b.floors.some(
-      (f) =>
-        f.spaces.length ||
-        f.walls.length ||
-        f.entrances.length ||
-        f.pois.length ||
-        f.furniture.length ||
-        f.navigation.nodes.length,
-    ),
+/**
+ * Whether replacing the project would lose anything. Not just placed objects:
+ * site work (outdoor paths, geo anchor, placement), extra buildings/floors,
+ * connectors, groups, a loaded floor-plan image, an unconfirmed vectorization
+ * draft, or simply any edit since the project was loaded all count. Only an
+ * untouched default project is "nothing to lose".
+ */
+function hasWorkToLose(): boolean {
+  if (editor.history.canUndo || editor.draft.hasDraft || editor.reference.current) return true;
+  const project = editor.project;
+  if (project.site || project.buildings.length > 1) return true;
+  return project.buildings.some(
+    (b) =>
+      b.floors.length > 1 ||
+      !!b.connectors?.length ||
+      !!b.placement ||
+      !!b.footprint ||
+      b.floors.some(
+        (f) =>
+          f.spaces.length ||
+          f.walls.length ||
+          f.entrances.length ||
+          f.pois.length ||
+          f.furniture.length ||
+          f.groups.length ||
+          f.navigation.nodes.length ||
+          f.navigation.edges.length,
+      ),
   );
 }
 
 const openError = ref("");
 
+/**
+ * Studio is a desktop authoring tool: 1024px wide is the minimum supported
+ * viewport. Below it the layout stacks (see the 760px media query) and a
+ * notice says so; visitors' maps are served by the Runtime, not Studio.
+ */
+const MIN_SUPPORTED_WIDTH = 1024;
+const smallScreen = ref(typeof window !== "undefined" && window.innerWidth < MIN_SUPPORTED_WIDTH);
+const smallScreenDismissed = ref(loadSessionFlag("spatium-studio:smallScreenDismissed"));
+function onViewportResize(): void {
+  smallScreen.value = window.innerWidth < MIN_SUPPORTED_WIDTH;
+}
+function dismissSmallScreen(): void {
+  smallScreenDismissed.value = true;
+  try {
+    window.sessionStorage.setItem("spatium-studio:smallScreenDismissed", "1");
+  } catch {
+    // ignore
+  }
+}
+function loadSessionFlag(key: string): boolean {
+  try {
+    return window.sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+const PREVIOUS_KEY = "spatium-studio:previous";
+/**
+ * The work replaced by the last "new project" / "open file", so the swap can
+ * be undone. Kept in memory and in localStorage, so it can still be restored
+ * after a reload (when the autosave slot already holds the new project).
+ * Only the map data is kept — reference images and unconfirmed drafts are not
+ * part of project JSON (the replace confirmation says so).
+ */
+interface ReplacedWork {
+  json: string;
+  reason: string;
+  /** ms epoch when it was replaced. */
+  savedAt: number;
+  /** false when localStorage refused it: it is lost on reload. */
+  persisted: boolean;
+}
+const replacedWork = ref<ReplacedWork | null>(loadStoredPreviousWork());
+
+/**
+ * Reads the snapshot left by an earlier session. Accepts the current envelope
+ * and the older raw-project-JSON format; a corrupt or unreadable snapshot is
+ * dropped so it can't block anything.
+ */
+function loadStoredPreviousWork(): ReplacedWork | null {
+  let raw: string | null;
+  try {
+    raw = window.localStorage.getItem(PREVIOUS_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const envelope =
+      parsed && typeof parsed === "object" && "json" in parsed && typeof parsed.json === "string"
+        ? (parsed as { json: string; savedAt?: unknown })
+        : { json: raw };
+    deserializeProject(envelope.json); // validate before offering it
+    const savedAt = typeof envelope.savedAt === "number" ? envelope.savedAt : 0;
+    const when = savedAt ? ` (${new Date(savedAt).toLocaleString()})` : "";
+    return {
+      json: envelope.json,
+      reason: `교체되기 전 작업이 남아 있습니다${when}`,
+      savedAt,
+      persisted: true,
+    };
+  } catch {
+    try {
+      window.localStorage.removeItem(PREVIOUS_KEY);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+}
+
+/** Keeps `json` as the restorable previous work (memory + best-effort storage). */
+function rememberPreviousWork(json: string, reason: string): void {
+  const savedAt = Date.now();
+  let persisted = true;
+  try {
+    window.localStorage.setItem(PREVIOUS_KEY, JSON.stringify({ json, savedAt }));
+  } catch {
+    // Storage full: the in-memory copy still allows undoing until reload.
+    persisted = false;
+  }
+  replacedWork.value = {
+    json,
+    reason: persisted ? reason : `${reason} · 저장 공간이 부족해 새로고침하면 되돌릴 수 없습니다`,
+    savedAt,
+    persisted,
+  };
+}
+
+function forgetPreviousWork(): void {
+  replacedWork.value = null;
+  try {
+    window.localStorage.removeItem(PREVIOUS_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function replaceProject(next: IndoorProject, reason: string): void {
+  if (hasWorkToLose()) rememberPreviousWork(serializeProject(editor.project), reason);
+  else forgetPreviousWork();
+  openError.value = "";
+  editor.loadProject(next);
+}
+
+/**
+ * Swaps the previous work back in. The work being left is kept as the new
+ * "previous" (so restoring never destroys anything and can itself be undone).
+ */
+function restoreReplacedWork(): void {
+  const previous = replacedWork.value;
+  if (!previous) return;
+  let project: IndoorProject;
+  try {
+    project = deserializeProject(previous.json);
+  } catch {
+    openError.value = "이전 작업을 복원하지 못했습니다. 저장된 데이터가 손상되었습니다.";
+    forgetPreviousWork();
+    return;
+  }
+  if (hasWorkToLose())
+    rememberPreviousWork(serializeProject(editor.project), "이전 작업을 복원했습니다");
+  else forgetPreviousWork();
+  openError.value = "";
+  editor.loadProject(project);
+}
+
 function newProject(): void {
   if (
-    hasUnsavedContent() &&
-    !window.confirm("현재 작업 내용이 저장되지 않고 사라집니다. 새 프로젝트를 시작할까요?")
+    hasWorkToLose() &&
+    !window.confirm(
+      editor.reference.current || editor.draft.hasDraft
+        ? "새 프로젝트를 시작합니다. 지도 데이터는 '이전 작업 되돌리기'로 다시 불러올 수 있지만, 불러온 도면 이미지와 확정하지 않은 자동 감지 결과는 사라집니다. 계속할까요?"
+        : "새 프로젝트를 시작합니다. 현재 작업은 '이전 작업 되돌리기'로 다시 불러올 수 있습니다. 계속할까요?",
+    )
   )
     return;
-  openError.value = "";
-  editor.loadProject(createDefaultProject());
+  replaceProject(createDefaultProject(), "새 프로젝트를 시작했습니다");
 }
 
 async function onOpenFile(event: Event): Promise<void> {
@@ -196,11 +366,14 @@ async function onOpenFile(event: Event): Promise<void> {
   try {
     const text = await file.text();
     const parsed = deserializeProject(text);
-    editor.loadProject(parsed);
-    openError.value = "";
+    replaceProject(parsed, `${file.name} 파일을 열었습니다`);
   } catch (error) {
     if (error instanceof SchemaVersionMismatchError) {
-      openError.value = "지원하지 않는 프로젝트 파일 버전입니다.";
+      // Newer files need a newer Studio; older ones lack a migration path.
+      openError.value =
+        compareSchemaVersions(error.foundVersion, error.expectedVersion) > 0
+          ? `이 파일은 더 새로운 버전(${error.foundVersion})에서 만들어졌습니다. Studio를 업데이트한 뒤 여세요 (현재 ${error.expectedVersion}).`
+          : `지원하지 않는 프로젝트 파일 버전입니다 (${error.foundVersion || "버전 없음"}).`;
     } else if (error instanceof InvalidProjectDataError) {
       openError.value = "프로젝트 파일의 형식이 올바르지 않습니다.";
     } else {
@@ -227,7 +400,7 @@ function scheduleAutosave(): void {
     } catch {
       lastSavedAt.value = null;
       autosaveError.value =
-        "자동 저장 공간이 부족하거나 사용할 수 없습니다. 내보내기 → 프로젝트 JSON으로 저장해 주세요.";
+        "자동 저장에 실패했습니다(저장 공간 부족 또는 사용 불가). 작업을 잃지 않도록 백업해 주세요.";
     }
   }, 1000);
 }
@@ -253,6 +426,7 @@ const selectionRevision = ref(0);
 
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
+  window.addEventListener("resize", onViewportResize);
   unsubscribers = [
     editor.on("toolChanged", (toolId) => {
       ui.activeToolId = toolId;
@@ -266,6 +440,13 @@ onMounted(() => {
     editor.on("projectChanged", scheduleAutosave),
     editor.on("projectLoaded", onProjectLoaded),
     editor.on("calibrationPointsPicked", onCalibrationPointsPicked),
+    editor.on("toolNotice", showToolNotice),
+    // Leaving the site view: a site-only tool would be stuck disabled.
+    editor.on("floorChanged", () => {
+      if (!editor.isSiteView() && editor.tools.active?.id === "site-building") {
+        editor.setTool("select");
+      }
+    }),
     editor.on("selectionChanged", () => selectionRevision.value++),
   ];
   if (restoredNotice.value)
@@ -276,6 +457,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("resize", onViewportResize);
   for (const unsubscribe of unsubscribers) unsubscribe();
   if (autosaveTimer !== null) clearTimeout(autosaveTimer);
   stopResize();
@@ -287,7 +469,7 @@ const tools = [
     label: "선택",
     icon: mdiCursorDefault,
     key: "V",
-    hint: "객체를 클릭해 속성을 수정하세요. Shift: 다중 선택 · Delete: 삭제 · Space/휠 클릭 드래그: 화면 이동",
+    hint: "객체를 클릭해 속성을 수정하세요. Shift/Ctrl+클릭: 다중 선택 · 드래그: 영역 선택 · Delete: 선택 항목 삭제 · Space/휠 클릭 드래그: 화면 이동",
   },
   {
     id: "polygon",
@@ -295,6 +477,13 @@ const tools = [
     icon: mdiShapePolygonPlus,
     key: "R",
     hint: "꼭짓점을 3개 이상 클릭한 후 Enter 또는 시작점을 클릭해 완성하세요. Esc: 취소",
+  },
+  {
+    id: "hole",
+    label: "구멍 그리기",
+    icon: mdiVectorDifferenceAb,
+    key: "H",
+    hint: "기둥·코어·보이드를 공간 안에 그려 비웁니다. 선택한 공간(없으면 윤곽을 감싸는 공간)에 들어갑니다. Enter: 완성 · Esc: 취소",
   },
   {
     id: "wall",
@@ -332,6 +521,13 @@ const tools = [
     hint: "빈 곳을 클릭해 지점을 잇따라 추가하세요. 기존 지점을 클릭하면 그 지점에 연결됩니다. Shift: 수평/수직 · Esc: 연결 끊기",
   },
   {
+    id: "site-building",
+    label: "건물 배치",
+    icon: mdiCursorMove,
+    key: "M",
+    hint: "단지 뷰에서 건물을 끌어 옮기고, Shift+드래그로 회전합니다. 정확한 값은 속성 패널의 '단지 · 지리 좌표'에서 입력하세요.",
+  },
+  {
     id: "calibrate",
     label: "축척 보정",
     icon: mdiRulerSquareCompass,
@@ -343,17 +539,18 @@ const tools = [
     label: "감지 결과 수정",
     icon: mdiAutoFix,
     key: "B",
-    hint: "벽 클릭·드래그: 이동 · 끝점 드래그: 길이 수정 · Delete: 제외 · Shift: 수평/수직 · Alt: 붙이기 해제",
+    hint: "벽 클릭·드래그: 이동 · 끝점 드래그: 길이 수정 · Shift/Ctrl+클릭·빈 곳 드래그: 다중 선택 · Delete: 선택 항목 제외 · Shift(끝점 드래그): 수평/수직 · Alt: 붙이기 해제",
   },
 ];
 type Tool = (typeof tools)[number];
 /** Purely a left-rail grouping label — doesn't affect tool ids, commands or shortcuts. */
 const TOOL_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: "선택 및 탐색", ids: ["select"] },
-  { label: "도형 작성", ids: ["polygon", "wall"] },
+  { label: "도형 작성", ids: ["polygon", "hole", "wall"] },
   { label: "출입구", ids: ["door"] },
   { label: "POI 및 객체", ids: ["poi", "furniture"] },
   { label: "내비게이션", ids: ["navigation"] },
+  { label: "단지", ids: ["site-building"] },
   { label: "측정 및 보정", ids: ["calibrate"] },
   { label: "자동 감지", ids: ["draft-review"] },
 ];
@@ -364,7 +561,23 @@ const groupedTools = computed(() =>
   })),
 );
 const activeTool = computed(() => tools.find((t) => t.id === ui.activeToolId)!);
+/** In the site view only these tools apply (the outdoor graph has no spaces or walls). */
+const SITE_VIEW_TOOLS = new Set(["select", "navigation", "site-building"]);
+const siteView = computed(() => {
+  revision.value;
+  return editor.isSiteView();
+});
+function toolAvailable(tool: Tool): boolean {
+  if (siteView.value) return SITE_VIEW_TOOLS.has(tool.id);
+  if (tool.id === "site-building") return false;
+  if (tool.id === "calibrate") return hasReference.value;
+  if (tool.id === "draft-review") return editor.draft.hasDraft;
+  return true;
+}
 function toolTitle(tool: Tool): string {
+  if (siteView.value && !SITE_VIEW_TOOLS.has(tool.id)) return "단지 뷰에서는 쓸 수 없습니다";
+  if (tool.id === "site-building" && !siteView.value)
+    return "상단의 '단지' 버튼으로 단지 뷰를 연 뒤 사용하세요";
   if (tool.id === "calibrate" && !hasReference.value) return "도면을 먼저 업로드하세요";
   if (tool.id === "draft-review" && !editor.draft.hasDraft)
     return "도면을 업로드하고 자동 벡터화를 실행하면 결과를 검토할 수 있습니다";
@@ -427,14 +640,28 @@ function onShortcut(event: KeyboardEvent): void {
     return;
   }
   const tool = tools.find((t) => t.key.toLowerCase() === event.key.toLowerCase());
-  if (
-    tool &&
-    (tool.id !== "calibrate" || hasReference.value) &&
-    (tool.id !== "draft-review" || editor.draft.hasDraft)
-  ) {
+  if (tool && toolAvailable(tool)) {
     event.preventDefault();
     selectTool(tool.id);
   }
+}
+
+function enterSiteView(): void {
+  show3d.value = false;
+  editor.enterSiteView();
+}
+
+const TOOL_NOTICES: Record<string, string> = {
+  "hole-no-space": "구멍을 넣을 공간이 없습니다. 공간을 먼저 선택하거나 공간 안쪽에 그리세요.",
+  "hole-invalid":
+    "구멍이 공간 밖으로 나가거나, 스스로 교차하거나, 다른 구멍과 겹쳐서 추가하지 않았습니다.",
+};
+const toolNotice = ref("");
+let toolNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+function showToolNotice(code: string): void {
+  toolNotice.value = TOOL_NOTICES[code] ?? code;
+  if (toolNoticeTimer !== null) clearTimeout(toolNoticeTimer);
+  toolNoticeTimer = setTimeout(() => (toolNotice.value = ""), 6000);
 }
 
 function selectTool(id: string): void {
@@ -478,7 +705,7 @@ function ungroupSelection(): void {
   editor.ungroupSelection();
 }
 
-function downloadFile(filename: string, content: string, mimeType: string): void {
+function downloadFile(filename: string, content: BlobPart, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -502,6 +729,12 @@ function exportGeoJson(): void {
     JSON.stringify(projectToGeoJSON(currentProject.value), null, 2),
     "application/geo+json",
   );
+}
+
+/** IMDF goes through a pre-export check dialog (errors, approximations, report). */
+const imdfDialog = ref<InstanceType<typeof ImdfExportDialog> | null>(null);
+function exportImdf(): void {
+  imdfDialog.value?.open();
 }
 
 // ---- Side panel layout: resizable width + collapse-to-rail, persisted locally ----
@@ -587,6 +820,20 @@ function selectRightTab(id: string): void {
 
 <template>
   <div class="studio">
+    <div v-if="smallScreen && !smallScreenDismissed" class="small-screen-notice" role="status">
+      <span>
+        Spatium Studio는 너비 {{ MIN_SUPPORTED_WIDTH }}px 이상의 데스크톱 화면을 기준으로 합니다.
+        작은 화면에서는 도면 확인과 간단한 수정만 권장합니다.
+      </span>
+      <button
+        type="button"
+        class="dismiss"
+        aria-label="화면 크기 안내 닫기"
+        @click="dismissSmallScreen"
+      >
+        ×
+      </button>
+    </div>
     <header class="topbar">
       <div class="topbar-zone zone-project">
         <span class="brand">S <strong>SPATIUM</strong></span>
@@ -598,6 +845,17 @@ function selectRightTab(id: string): void {
           @select="onSelectBuilding"
         />
         <FloorSwitcher v-if="activeBuilding" :editor="editor" :building="activeBuilding" />
+        <button
+          type="button"
+          class="secondary site-toggle"
+          :class="{ active: siteView }"
+          :aria-pressed="siteView"
+          title="단지 뷰: 건물 배치와 건물 사이 실외 경로를 편집합니다"
+          @click="enterSiteView"
+        >
+          <MdiIcon :path="mdiMapOutline" :size="15" />
+          단지
+        </button>
       </div>
 
       <div class="topbar-divider" />
@@ -658,7 +916,24 @@ function selectRightTab(id: string): void {
         </button>
       </span>
       <span v-if="openError" class="error-text" role="alert">{{ openError }}</span>
-      <span v-if="autosaveError" class="error-text" role="alert">{{ autosaveError }}</span>
+      <span v-if="replacedWork" class="restored-badge" role="status">
+        {{ replacedWork.reason }}
+        <button class="link-button" type="button" @click="restoreReplacedWork">
+          {{
+            replacedWork.reason.startsWith("이전 작업을 복원")
+              ? "방금 작업으로 돌아가기"
+              : "이전 작업 되돌리기"
+          }}
+        </button>
+        <button class="dismiss" type="button" aria-label="알림 닫기" @click="replacedWork = null">
+          ×
+        </button>
+      </span>
+      <span v-if="autosaveError" class="error-text" role="alert">
+        {{ autosaveError }}
+        <button class="link-button" type="button" @click="exportJson">지금 백업 다운로드</button>
+      </span>
+      <span v-if="toolNotice" class="error-text" role="status">{{ toolNotice }}</span>
 
       <div class="spacer" />
 
@@ -687,8 +962,10 @@ function selectRightTab(id: string): void {
           <div>
             <button @click="exportJson">프로젝트 JSON</button>
             <button @click="exportGeoJson">지도 GeoJSON</button>
+            <button @click="exportImdf">IMDF (Apple 실내 지도)</button>
           </div>
         </details>
+        <ImdfExportDialog ref="imdfDialog" :project="currentProject" @download="downloadFile" />
       </div>
     </header>
 
@@ -735,10 +1012,7 @@ function selectRightTab(id: string): void {
                 :class="{ active: ui.activeToolId === tool.id }"
                 :aria-pressed="ui.activeToolId === tool.id"
                 :aria-label="tool.label"
-                :disabled="
-                  (tool.id === 'calibrate' && !hasReference) ||
-                  (tool.id === 'draft-review' && !editor.draft.hasDraft)
-                "
+                :disabled="!toolAvailable(tool)"
                 :title="toolTitle(tool)"
                 @click="selectTool(tool.id)"
               >
@@ -774,7 +1048,7 @@ function selectRightTab(id: string): void {
             <p>{{ activeTool.hint }}</p>
           </div>
 
-          <div v-if="empty && !show3d && ui.activeToolId === 'select'" class="welcome">
+          <div v-if="empty && !siteView && !show3d && ui.activeToolId === 'select'" class="welcome">
             <span class="hint">시작하기</span>
             <h1>첫 공간을 그려보세요</h1>
             <p>도면을 불러와 따라 그리거나,<br />공간 도구로 지도를 직접 만들 수 있습니다.</p>
@@ -882,7 +1156,8 @@ function selectRightTab(id: string): void {
     </div>
 
     <footer class="statusbar">
-      <ValidationPanel :editor="editor" />
+      <ValidationPanel class="statusbar-main" :editor="editor" />
+      <OpenSourceNotices />
     </footer>
   </div>
 </template>
@@ -973,6 +1248,19 @@ function selectRightTab(id: string): void {
   max-width: 220px;
 }
 
+.link-button {
+  height: auto;
+  padding: 0 var(--space-1);
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font-size: inherit;
+  text-decoration: underline;
+}
+.site-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .restored-badge {
   display: inline-flex;
   align-items: center;
@@ -1345,9 +1633,15 @@ function selectRightTab(id: string): void {
 }
 
 .statusbar {
+  display: flex;
+  align-items: flex-start;
   flex-shrink: 0;
   background: var(--surface-1);
   border-top: 1px solid var(--border);
+}
+.statusbar-main {
+  flex: 1;
+  min-width: 0;
 }
 
 @keyframes welcome-in {
@@ -1371,10 +1665,36 @@ function selectRightTab(id: string): void {
   }
 }
 
+.small-screen-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--bg-warning, #fff4d6);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+.small-screen-notice span {
+  flex: 1;
+  min-width: 0;
+}
+
 @media (max-width: 760px) {
   .studio {
     height: auto;
     min-height: 100dvh;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .canvas-area {
+    width: 100%;
+    min-width: 0;
+    order: -1;
   }
   .body {
     flex-wrap: wrap;

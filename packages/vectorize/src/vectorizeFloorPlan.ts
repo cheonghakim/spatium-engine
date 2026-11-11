@@ -71,7 +71,8 @@ export interface VectorizationResult {
   elements: DraftElement[];
 }
 
-const DEFAULTS: Required<VectorizeOptions> = {
+/** Default option values, in source-image pixel units for the `*Px` fields. */
+export const DEFAULTS: Required<VectorizeOptions> = {
   autoThreshold: true,
   maxLineGapPx: 2,
   minWallThicknessPx: 1,

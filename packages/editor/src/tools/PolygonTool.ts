@@ -1,4 +1,4 @@
-import { createSpace, distance, type Point } from "@indoor/core";
+import { createSpace, distance, type Floor, type Point } from "@indoor/core";
 import { AddSpaceCommand } from "../commands/SpaceCommands.js";
 import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
@@ -12,11 +12,11 @@ const MIN_SEGMENT_LENGTH_METERS = 0.01;
  * Space via AddSpaceCommand), Escape -> cancel, Backspace -> drop last vertex.
  */
 export class PolygonTool implements EditorTool {
-  readonly id = "polygon";
+  readonly id: string = "polygon";
 
   private draftPoints: Point[] = [];
 
-  constructor(private readonly context: ToolContext) {}
+  constructor(protected readonly context: ToolContext) {}
 
   activate(): void {
     this.draftPoints = [];
@@ -86,11 +86,16 @@ export class PolygonTool implements EditorTool {
       return;
     }
 
-    const space = createSpace(floorId, [...this.draftPoints]);
-    this.context.executeCommand(new AddSpaceCommand(floor, space));
-    this.context.selection.select(space.id);
+    this.commit(floor, floorId, [...this.draftPoints]);
 
     this.draftPoints = [];
     this.context.requestRender();
+  }
+
+  /** What a finished outline becomes — a new Space here; subclasses reuse the drawing UX. */
+  protected commit(floor: Floor, floorId: string, points: Point[]): void {
+    const space = createSpace(floorId, points);
+    this.context.executeCommand(new AddSpaceCommand(floor, space));
+    this.context.selection.select(space.id);
   }
 }

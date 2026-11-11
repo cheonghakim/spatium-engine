@@ -634,3 +634,71 @@ describe("serializeProject / deserializeProject", () => {
     });
   });
 });
+
+describe("deserializeProject required-field and identity contract", () => {
+  function sample() {
+    const project = createEmptyProject("Contract");
+    const building = createBuilding("B");
+    const floor = createFloor("1F", 1);
+    const a = createNavigationNode(floor.id, { x: 0, y: 0 });
+    const b = createNavigationNode(floor.id, { x: 3, y: 4 });
+    floor.navigation.nodes.push(a, b);
+    floor.navigation.edges.push(createNavigationEdge(a.id, b.id, 5));
+    building.floors.push(floor);
+    project.buildings.push(building);
+    return JSON.parse(serializeProject(project));
+  }
+  const load = (data: unknown) => () => deserializeProject(JSON.stringify(data));
+
+  it.each(["id", "name", "level", "elevation"])("rejects a floor without %s", (key) => {
+    const data = sample();
+    delete data.buildings[0].floors[0][key];
+    expect(load(data)).toThrow(InvalidProjectDataError);
+  });
+
+  it("rejects floors with non-finite level/elevation or an empty id", () => {
+    const bad = sample();
+    bad.buildings[0].floors[0].level = "1";
+    expect(load(bad)).toThrow(/finite numeric "level"/);
+    const empty = sample();
+    empty.buildings[0].floors[0].id = "";
+    expect(load(empty)).toThrow(/non-empty "id"/);
+  });
+
+  it("rejects negative edge distances and unknown node/edge types", () => {
+    const negative = sample();
+    negative.buildings[0].floors[0].navigation.edges[0].distance = -1;
+    expect(load(negative)).toThrow(/non-negative/);
+    const edgeType = sample();
+    edgeType.buildings[0].floors[0].navigation.edges[0].type = "teleport";
+    expect(load(edgeType)).toThrow(/supported "type"/);
+    const accessible = sample();
+    accessible.buildings[0].floors[0].navigation.edges[0].accessible = "yes";
+    expect(load(accessible)).toThrow(/boolean "accessible"/);
+    const nodeType = sample();
+    nodeType.buildings[0].floors[0].navigation.nodes[0].type = "portal";
+    expect(load(nodeType)).toThrow(/supported "type"/);
+  });
+
+  it("rejects duplicate floor and navigation node ids", () => {
+    const floors = sample();
+    floors.buildings[0].floors.push(structuredClone(floors.buildings[0].floors[0]));
+    expect(load(floors)).toThrow(/Duplicate floor id/);
+    const nodes = sample();
+    const nav = nodes.buildings[0].floors[0].navigation;
+    nav.nodes[1].id = nav.nodes[0].id;
+    expect(load(nodes)).toThrow(/Duplicate navigation node id/);
+  });
+
+  it("normalizes optional edge fields and node floorId instead of rejecting", () => {
+    const data = sample();
+    const floor = data.buildings[0].floors[0];
+    delete floor.navigation.edges[0].type;
+    delete floor.navigation.edges[0].accessible;
+    floor.navigation.nodes[0].floorId = "stale";
+    const project = deserializeProject(JSON.stringify(data));
+    const loaded = project.buildings[0]!.floors[0]!;
+    expect(loaded.navigation.edges[0]).toMatchObject({ type: "walk", accessible: true });
+    expect(loaded.navigation.nodes[0]!.floorId).toBe(loaded.id);
+  });
+});

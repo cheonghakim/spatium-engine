@@ -1,4 +1,5 @@
 import { createId } from "../id.js";
+import type { NavigationEdge } from "../types/navigation.js";
 import type { Building, IndoorProject } from "../types/project.js";
 import type { ValidationIssue } from "./types.js";
 import {
@@ -10,8 +11,18 @@ import {
   validateSpaces,
   validateWalls,
 } from "./rules.js";
+import {
+  connectorConnectivityEdges,
+  validateConnectors,
+  validateFloorLinkDuplicates,
+  validateExternalIds,
+  validateSite,
+} from "./structure.js";
 
-function validateFloorConnections(building: Building): ValidationIssue[] {
+function validateFloorConnections(
+  building: Building,
+  connectorEdges: NavigationEdge[],
+): ValidationIssue[] {
   if (building.floors.length < 2) return [];
 
   const floorIdToNodeIds = new Map<string, Set<string>>();
@@ -25,17 +36,22 @@ function validateFloorConnections(building: Building): ValidationIssue[] {
   }
 
   const connectedFloorIds = new Set<string>();
-  for (const floor of building.floors) {
-    for (const edge of floor.navigation.edges) {
-      if (edge.type !== "stairs" && edge.type !== "elevator" && edge.type !== "escalator") {
-        continue;
-      }
-      const fromFloor = nodeIdToFloorId.get(edge.from);
-      const toFloor = nodeIdToFloorId.get(edge.to);
-      if (fromFloor && toFloor && fromFloor !== toFloor) {
-        connectedFloorIds.add(fromFloor);
-        connectedFloorIds.add(toFloor);
-      }
+  // Connector-derived links count as vertical connections even when their
+  // type is "walk" (ramps): crossing floors is what matters here.
+  const verticalEdges = [
+    ...building.floors.flatMap((f) =>
+      f.navigation.edges.filter(
+        (e) => e.type === "stairs" || e.type === "elevator" || e.type === "escalator",
+      ),
+    ),
+    ...connectorEdges,
+  ];
+  for (const edge of verticalEdges) {
+    const fromFloor = nodeIdToFloorId.get(edge.from);
+    const toFloor = nodeIdToFloorId.get(edge.to);
+    if (fromFloor && toFloor && fromFloor !== toFloor) {
+      connectedFloorIds.add(fromFloor);
+      connectedFloorIds.add(toFloor);
     }
   }
 
@@ -47,7 +63,7 @@ function validateFloorConnections(building: Building): ValidationIssue[] {
         severity: "warning",
         type: "missing-floor-connection",
         objectId: floor.id,
-        message: `Floor "${floor.name}" has no vertical navigation edge (stairs/elevator/escalator) linking it to another floor.`,
+        message: `Floor "${floor.name}" has no vertical navigation edge or connector (stairs/elevator/escalator/ramp) linking it to another floor.`,
       });
     }
   }
@@ -57,9 +73,21 @@ function validateFloorConnections(building: Building): ValidationIssue[] {
 export function validateProject(project: IndoorProject): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
+  // Edges that make a node "connected" without being stored on its floor:
+  // connector links between stops, and site edges reaching into buildings.
+  // Site nodes must be resolvable too, or validateNavigation skips a site
+  // edge (unknown endpoint) and the building node it reaches looks isolated.
+  const siteEdges = project.site?.navigation.edges ?? [];
+  const siteNodes = project.site?.navigation.nodes ?? [];
+
   for (const building of project.buildings) {
-    const buildingNodes = building.floors.flatMap((f) => f.navigation.nodes);
-    const buildingEdges = building.floors.flatMap((f) => f.navigation.edges);
+    const buildingNodes = [...building.floors.flatMap((f) => f.navigation.nodes), ...siteNodes];
+    const connectorEdges = connectorConnectivityEdges(building);
+    const buildingEdges = [
+      ...building.floors.flatMap((f) => f.navigation.edges),
+      ...connectorEdges,
+      ...siteEdges,
+    ];
 
     for (const floor of building.floors) {
       issues.push(...validateSpaces(floor));
@@ -70,8 +98,12 @@ export function validateProject(project: IndoorProject): ValidationIssue[] {
       issues.push(...validateGroups(floor));
       issues.push(...validateNavigation(floor, buildingNodes, buildingEdges));
     }
-    issues.push(...validateFloorConnections(building));
+    issues.push(...validateFloorConnections(building, connectorEdges));
+    issues.push(...validateConnectors(building));
+    issues.push(...validateFloorLinkDuplicates(building));
   }
+  issues.push(...validateSite(project));
+  issues.push(...validateExternalIds(project));
 
   return issues;
 }
