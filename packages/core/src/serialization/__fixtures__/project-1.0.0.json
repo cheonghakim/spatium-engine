@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "p-legacy",
+  "name": "Legacy Mall",
+  "buildings": [
+    {
+      "id": "b-1",
+      "name": "Main",
+      "floors": [
+        {
+          "id": "f-1",
+          "name": "1F",
+          "level": 1,
+          "elevation": 0,
+          "spaces": [
+            {
+              "id": "s-1",
+              "floorId": "f-1",
+              "polygon": [
+                { "x": 0, "y": 0 },
+                { "x": 10, "y": 0 },
+                { "x": 10, "y": 8 },
+                { "x": 0, "y": 8 }
+              ],
+              "type": "store",
+              "height": 3,
+              "properties": { "name": "Cafe", "tenantId": "T-100" }
+            }
+          ],
+          "walls": [
+            {
+              "id": "w-1",
+              "floorId": "f-1",
+              "start": { "x": 0, "y": 0 },
+              "end": { "x": 10, "y": 0 },
+              "thickness": 0.2
+            }
+          ],
+          "entrances": [
+            {
+              "id": "e-1",
+              "floorId": "f-1",
+              "position": { "x": 5, "y": 0 },
+              "type": "door",
+              "spaceA": "s-1"
+            }
+          ],
+          "pois": [
+            {
+              "id": "poi-1",
+              "floorId": "f-1",
+              "position": { "x": 5, "y": 4 },
+              "type": "store",
+              "name": "Cafe",
+              "spaceId": "s-1"
+            }
+          ],
+          "navigation": {
+            "nodes": [
+              { "id": "n-1", "floorId": "f-1", "position": { "x": 5, "y": 1 }, "type": "entrance" },
+              { "id": "n-2", "floorId": "f-1", "position": { "x": 9, "y": 7 }, "type": "stairs" }
+            ],
+            "edges": [
+              {
+                "id": "ed-1",
+                "from": "n-1",
+                "to": "n-2",
+                "type": "walk",
+                "distance": 7.211,
+                "accessible": true
+              },
+              {
+                "id": "ed-2",
+                "from": "n-2",
+                "to": "n-3",
+                "type": "stairs",
+                "distance": 4,
+                "accessible": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "f-2",
+          "name": "2F",
+          "level": 2,
+          "elevation": 4,
+          "spaces": [],
+          "walls": [],
+          "entrances": [],
+          "pois": [],
+          "navigation": {
+            "nodes": [
+              { "id": "n-3", "floorId": "f-2", "position": { "x": 9, "y": 7 }, "type": "stairs" }
+            ],
+            "edges": []
+          }
+        }
+      ]
+    }
+  ]
+}

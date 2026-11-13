@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
+  DEFAULT_CONNECTOR_TIMING,
   FURNITURE_PRESETS,
+  polygonArea,
+  spaceArea,
   validateProject,
   type Building,
+  type Connector,
+  type ConnectorSpec,
+  type ConnectorType,
   type Entrance,
   type EntranceType,
   type Furniture,
@@ -40,6 +46,7 @@ import {
 import MdiIcon from "./MdiIcon.vue";
 import NumberField from "./NumberField.vue";
 import PropertyGroup from "./PropertyGroup.vue";
+import SiteSettings from "./SiteSettings.vue";
 
 const props = defineProps<{ editor: IndoorEditor; lastSavedAt?: number | null }>();
 
@@ -484,6 +491,10 @@ function onGroupLabel(evt: Event): void {
 function ungroupSelectedGroup(): void {
   props.editor.ungroupSelection();
 }
+const selectionCount = computed(() => {
+  revision.value;
+  return props.editor.selection.current.length;
+});
 function deleteSelected(): void {
   props.editor.deleteSelection();
 }
@@ -568,6 +579,186 @@ function onLinkFloorNode(evt: Event): void {
     value || null,
     selected.value.node.type as NavigationEdgeType,
   );
+}
+
+// ---- Vertical connectors (elevator/stairs/escalator/ramp) at the selected node ----
+const CONNECTOR_TYPES: ConnectorType[] = ["elevator", "stairs", "escalator", "ramp"];
+const CONNECTOR_TYPE_LABELS: Record<ConnectorType, string> = {
+  elevator: "엘리베이터",
+  stairs: "계단",
+  escalator: "에스컬레이터",
+  ramp: "경사로",
+};
+const SPEC_FIELDS: Array<{ key: keyof ConnectorSpec; label: string; unit: string }> = [
+  { key: "speed", label: "속도", unit: "m/s" },
+  { key: "averageWait", label: "평균 대기", unit: "초" },
+  { key: "boardingTime", label: "승하차", unit: "초" },
+  { key: "capacity", label: "정원", unit: "명" },
+];
+const newConnectorType = ref<ConnectorType>("elevator");
+
+const nodeConnectors = computed<Connector[]>(() => {
+  revision.value;
+  if (selected.value?.kind !== "navigationNode") return [];
+  return props.editor.connectorsAtNode(selected.value.node.id).map((c) => c.connector);
+});
+
+function connectorStopRows(connector: Connector) {
+  revision.value;
+  const building = props.editor.findConnector(connector.id)?.building;
+  return connector.stops
+    .map((stop) => {
+      const floor = building?.floors.find((f) => f.id === stop.floorId);
+      const node = floor?.navigation.nodes.find((n) => n.id === stop.nodeId);
+      return {
+        nodeId: stop.nodeId,
+        label: `${floor?.name ?? "삭제된 층"} · ${node ? navNodeLabel(node) : "삭제된 노드"}`,
+        level: floor?.level ?? 0,
+      };
+    })
+    .sort((a, b) => a.level - b.level);
+}
+
+/** Nodes on floors this connector doesn't stop at yet. */
+function connectorStopOptions(connector: Connector) {
+  revision.value;
+  const building = props.editor.findConnector(connector.id)?.building;
+  if (!building) return [];
+  const served = new Set(connector.stops.map((s) => s.floorId));
+  const options: Array<{ id: string; label: string }> = [];
+  for (const floor of building.floors) {
+    if (served.has(floor.id)) continue;
+    for (const node of floor.navigation.nodes) {
+      options.push({ id: node.id, label: `${floor.name} · ${navNodeLabel(node)}` });
+    }
+  }
+  return options;
+}
+
+function specPlaceholder(connector: Connector, key: keyof ConnectorSpec): string {
+  if (key === "capacity") return "선택";
+  if (connector.type === "ramp" && key === "speed") return "기본: 보행 속도";
+  return `기본 ${DEFAULT_CONNECTOR_TIMING[connector.type][key]}`;
+}
+
+function createConnectorHere(): void {
+  if (selected.value?.kind !== "navigationNode") return;
+  const node = selected.value.node;
+  props.editor.createConnectorAtNode(node.id, newConnectorType.value, node.name || undefined);
+}
+function onConnectorName(connector: Connector, evt: Event): void {
+  props.editor.updateConnector(
+    connector.id,
+    "name",
+    (evt.target as HTMLInputElement).value.trim() || undefined,
+  );
+}
+function onConnectorType(connector: Connector, evt: Event): void {
+  const type = (evt.target as HTMLSelectElement).value as ConnectorType;
+  props.editor.updateConnector(connector.id, "type", type);
+  if (type !== "escalator" && connector.direction) {
+    props.editor.updateConnector(connector.id, "direction", undefined);
+  }
+}
+function onConnectorAccessible(connector: Connector, evt: Event): void {
+  props.editor.updateConnector(
+    connector.id,
+    "accessible",
+    (evt.target as HTMLInputElement).checked,
+  );
+}
+function onConnectorDirection(connector: Connector, evt: Event): void {
+  const value = (evt.target as HTMLSelectElement).value;
+  props.editor.updateConnector(
+    connector.id,
+    "direction",
+    value === "up" || value === "down" ? value : undefined,
+  );
+}
+function onConnectorSpec(connector: Connector, key: keyof ConnectorSpec, evt: Event): void {
+  const raw = (evt.target as HTMLInputElement).value.trim();
+  const value = Number(raw);
+  const spec: ConnectorSpec = { ...connector.spec };
+  if (!raw || !Number.isFinite(value) || value < 0) delete spec[key];
+  else spec[key] = value;
+  props.editor.updateConnector(connector.id, "spec", Object.keys(spec).length ? spec : undefined);
+}
+function onAddConnectorStop(connector: Connector, evt: Event): void {
+  const select = evt.target as HTMLSelectElement;
+  if (select.value) props.editor.addConnectorStop(connector.id, select.value);
+  select.value = "";
+}
+function removeConnectorStop(connector: Connector, nodeId: string): void {
+  props.editor.removeConnectorStop(connector.id, nodeId);
+}
+function deleteConnector(connector: Connector): void {
+  props.editor.deleteConnector(connector.id);
+}
+
+// ---- Site view: outdoor node ↔ building node links ----
+const inSiteView = computed(() => {
+  revision.value;
+  return props.editor.isSiteView();
+});
+const siteLinks = computed(() => {
+  revision.value;
+  if (selected.value?.kind !== "navigationNode" || !inSiteView.value) return [];
+  const targets = new Map(props.editor.siteLinkTargets().map((t) => [t.nodeId, t.label]));
+  return props.editor
+    .siteLinksOf(selected.value.node.id)
+    .map((link) => ({ ...link, label: targets.get(link.nodeId) ?? "삭제된 노드" }));
+});
+/** Entrances first: those are what outdoor paths normally attach to. */
+const siteLinkOptions = computed(() => {
+  revision.value;
+  if (!inSiteView.value) return [];
+  const linked = new Set(siteLinks.value.map((l) => l.nodeId));
+  return props.editor
+    .siteLinkTargets()
+    .filter((t) => !linked.has(t.nodeId))
+    .sort((a, b) => Number(b.type === "entrance") - Number(a.type === "entrance"));
+});
+function onAddSiteLink(evt: Event): void {
+  const select = evt.target as HTMLSelectElement;
+  if (selected.value?.kind === "navigationNode" && select.value) {
+    props.editor.linkSiteNode(selected.value.node.id, select.value);
+  }
+  select.value = "";
+}
+function removeSiteLink(edgeId: string): void {
+  props.editor.removeSiteEdge(edgeId);
+}
+
+// ---- Holes of the selected space ----
+const spaceHoles = computed(() => {
+  revision.value;
+  if (selected.value?.kind !== "space") return [];
+  return (selected.value.space.holes ?? []).map((hole, index) => ({
+    index,
+    vertices: hole.length,
+    area: Math.abs(polygonArea(hole)),
+  }));
+});
+const spaceNetArea = computed(() => {
+  revision.value;
+  return selected.value?.kind === "space" ? spaceArea(selected.value.space) : 0;
+});
+function removeHole(index: number): void {
+  if (selected.value?.kind === "space") props.editor.removeHole(selected.value.space.id, index);
+}
+
+// ---- Hand-drawn floor link → connector ----
+const conversionMessage = ref("");
+function convertLinkToConnector(): void {
+  if (selected.value?.kind !== "navigationNode") return;
+  const { created, reasons } = props.editor.convertFloorLinksToConnectors(selected.value.node.id);
+  conversionMessage.value = created
+    ? ""
+    : reasons.includes("one-way-ambiguous")
+      ? "일방통행 방향이 섞여 있거나 에스컬레이터가 아닌 일방통행 연결이라 자동 변환하지 않았습니다. 설비를 직접 만들어 방향을 지정하세요."
+      : reasons.includes("multiple-nodes-on-floor")
+        ? "같은 층에 연결된 노드가 둘 이상이라 자동 변환할 수 없습니다. 설비를 직접 만들어 주세요."
+        : "변환할 층간 연결이 없습니다.";
 }
 
 function onNavEdgeType(evt: Event): void {
@@ -699,13 +890,20 @@ const lastSavedLabel = computed(() => {
           <span class="hint-inline">하단 검증 바에서 자세히 확인하세요.</span>
         </p>
       </div>
+
+      <PropertyGroup title="단지 · 지리 좌표" :default-open="false">
+        <SiteSettings :editor="editor" />
+      </PropertyGroup>
     </template>
 
     <template v-else>
       <div class="selection-header">
         <span class="selection-icon"><MdiIcon :path="selectionMeta!.icon" :size="16" /></span>
         <div class="selection-title">
-          <strong>{{ selectionMeta!.label }}</strong>
+          <strong
+            >{{ selectionMeta!.label
+            }}<template v-if="selectionCount > 1"> 외 {{ selectionCount - 1 }}개</template></strong
+          >
           <span class="selection-id">#{{ objectId() }}</span>
         </div>
         <span class="autosave-note" title="변경 사항은 즉시 적용되고 자동 저장됩니다"
@@ -713,7 +911,11 @@ const lastSavedLabel = computed(() => {
         >
         <button
           class="btn-ghost btn-icon danger-ghost delete-selection-button"
-          title="선택 항목 삭제 (Delete)"
+          :title="
+            selectionCount > 1
+              ? `선택한 ${selectionCount}개 모두 삭제 (Delete)`
+              : '선택 항목 삭제 (Delete)'
+          "
           aria-label="선택 항목 삭제"
           @click="deleteSelected"
         >
@@ -775,6 +977,26 @@ const lastSavedLabel = computed(() => {
               @change="onStairSpace('stairSteps', $event)"
             />
           </template>
+        </PropertyGroup>
+        <PropertyGroup title="구멍 (기둥·보이드)" :default-open="spaceHoles.length > 0">
+          <p class="readonly-field">순면적 {{ spaceNetArea.toFixed(1) }} m²</p>
+          <ul v-if="spaceHoles.length" class="member-list">
+            <li v-for="hole in spaceHoles" :key="hole.index" class="member-row">
+              <span class="member-label"
+                >구멍 {{ hole.index + 1 }} · {{ hole.area.toFixed(1) }} m²</span
+              >
+              <button
+                type="button"
+                class="btn-ghost btn-icon danger-ghost"
+                :aria-label="`구멍 ${hole.index + 1} 삭제`"
+                title="구멍 삭제"
+                @click="removeHole(hole.index)"
+              >
+                <MdiIcon :path="mdiTrashCanOutline" :size="12" />
+              </button>
+            </li>
+          </ul>
+          <p class="hint">왼쪽 도구의 '구멍 그리기'(H)로 이 공간 안에 구멍을 그립니다.</p>
         </PropertyGroup>
       </template>
 
@@ -1014,8 +1236,37 @@ const lastSavedLabel = computed(() => {
             </select>
           </label>
         </PropertyGroup>
+        <PropertyGroup v-if="inSiteView" title="건물 연결">
+          <ul v-if="siteLinks.length" class="member-list">
+            <li v-for="link in siteLinks" :key="link.edgeId" class="member-row">
+              <span class="member-label">{{ link.label }}</span>
+              <button
+                type="button"
+                class="btn-ghost btn-icon danger-ghost"
+                :aria-label="`${link.label} 연결 해제`"
+                title="연결 해제"
+                @click="removeSiteLink(link.edgeId)"
+              >
+                <MdiIcon :path="mdiTrashCanOutline" :size="12" />
+              </button>
+            </li>
+          </ul>
+          <label class="field">
+            <span class="field-label">건물 출입구 연결</span>
+            <select value="" @change="onAddSiteLink">
+              <option value="" disabled>건물 노드 선택…</option>
+              <option v-for="option in siteLinkOptions" :key="option.nodeId" :value="option.nodeId">
+                {{ option.label }}{{ option.type === "entrance" ? " (출입구)" : "" }}
+              </option>
+            </select>
+          </label>
+          <p class="hint">
+            실외 경로를 건물 출입구 노드에 이으면 단지 → 건물 → 층으로 이어지는 경로를 찾습니다.
+            거리는 건물 배치를 반영한 단지 좌표로 계산합니다.
+          </p>
+        </PropertyGroup>
         <PropertyGroup
-          v-if="CROSS_FLOOR_NODE_TYPES.includes(selected.node.type)"
+          v-if="!inSiteView && CROSS_FLOOR_NODE_TYPES.includes(selected.node.type)"
           title="연결 및 네비게이션"
         >
           <label class="field">
@@ -1030,6 +1281,134 @@ const lastSavedLabel = computed(() => {
           <p v-if="!crossFloorNodeOptions.length" class="hint">
             연결할 다른 층의 계단·엘리베이터 노드가 없습니다. 다른 층에 노드를 먼저 만드세요.
           </p>
+          <template v-if="linkedCrossFloorNodeId">
+            <button type="button" class="connector-create" @click="convertLinkToConnector">
+              수직 이동 설비로 변환
+            </button>
+            <p class="hint">
+              손으로 이은 층간 연결을 설비로 바꾸면 대기·속도 스펙이 경로 시간에 반영되고, 정차층을
+              한 곳에서 관리합니다.
+            </p>
+          </template>
+          <p v-if="conversionMessage" class="hint">
+            {{ conversionMessage }}
+          </p>
+        </PropertyGroup>
+        <PropertyGroup
+          v-if="
+            !inSiteView &&
+            (CROSS_FLOOR_NODE_TYPES.includes(selected.node.type) || nodeConnectors.length)
+          "
+          title="수직 이동 설비"
+        >
+          <template v-if="!nodeConnectors.length">
+            <p class="hint">
+              엘리베이터·계단을 설비로 만들면 정차층만 지정해도 층간 경로가 자동으로 생기고, 대기
+              시간·속도를 반영해 소요 시간 기준으로 경로를 찾습니다.
+            </p>
+            <label class="field">
+              <span class="field-label">설비 종류</span>
+              <select v-model="newConnectorType" aria-label="설비 종류">
+                <option v-for="type in CONNECTOR_TYPES" :key="type" :value="type">
+                  {{ CONNECTOR_TYPE_LABELS[type] }}
+                </option>
+              </select>
+            </label>
+            <button type="button" class="connector-create" @click="createConnectorHere">
+              이 노드에서 설비 만들기
+            </button>
+          </template>
+          <div v-for="connector in nodeConnectors" :key="connector.id" class="connector-card">
+            <label class="field">
+              <span class="field-label">설비 이름</span>
+              <input
+                type="text"
+                placeholder="예: 1호기, 동쪽 계단"
+                :value="connector.name ?? ''"
+                @change="onConnectorName(connector, $event)"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">설비 종류</span>
+              <select :value="connector.type" @change="onConnectorType(connector, $event)">
+                <option v-for="type in CONNECTOR_TYPES" :key="type" :value="type">
+                  {{ CONNECTOR_TYPE_LABELS[type] }}
+                </option>
+              </select>
+            </label>
+            <label v-if="connector.type === 'escalator'" class="field">
+              <span class="field-label">운행 방향</span>
+              <select
+                :value="connector.direction ?? ''"
+                @change="onConnectorDirection(connector, $event)"
+              >
+                <option value="">양방향</option>
+                <option value="up">상행</option>
+                <option value="down">하행</option>
+              </select>
+            </label>
+            <label class="field checkbox-field">
+              <input
+                type="checkbox"
+                :checked="connector.accessible"
+                @change="onConnectorAccessible(connector, $event)"
+              />
+              휠체어 이용 가능
+            </label>
+            <div class="spec-grid">
+              <label v-for="field in SPEC_FIELDS" :key="field.key" class="field">
+                <span class="field-label">{{ field.label }} ({{ field.unit }})</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  :placeholder="specPlaceholder(connector, field.key)"
+                  :value="connector.spec?.[field.key] ?? ''"
+                  @change="onConnectorSpec(connector, field.key, $event)"
+                />
+              </label>
+            </div>
+            <div class="field">
+              <span class="field-label">정차층 ({{ connector.stops.length }})</span>
+              <ul class="member-list">
+                <li
+                  v-for="stop in connectorStopRows(connector)"
+                  :key="stop.nodeId"
+                  class="member-row"
+                >
+                  <span class="member-label">{{ stop.label }}</span>
+                  <button
+                    type="button"
+                    class="btn-ghost btn-icon danger-ghost"
+                    :aria-label="`${stop.label} 정차층 제거`"
+                    title="정차층 제거"
+                    @click="removeConnectorStop(connector, stop.nodeId)"
+                  >
+                    <MdiIcon :path="mdiTrashCanOutline" :size="12" />
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <label class="field">
+              <span class="field-label">정차층 추가</span>
+              <select value="" @change="onAddConnectorStop(connector, $event)">
+                <option value="" disabled>다른 층의 노드 선택…</option>
+                <option
+                  v-for="option in connectorStopOptions(connector)"
+                  :key="option.id"
+                  :value="option.id"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <p v-if="connector.stops.length < 2" class="hint">
+              정차층이 2개 이상이어야 층이 연결됩니다.
+            </p>
+            <button type="button" class="danger-ghost" @click="deleteConnector(connector)">
+              설비 삭제
+            </button>
+          </div>
         </PropertyGroup>
       </template>
 
@@ -1249,6 +1628,31 @@ const lastSavedLabel = computed(() => {
 }
 .ungroup-button {
   width: 100%;
+}
+.connector-create {
+  width: 100%;
+}
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.connector-card + .connector-card {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-2);
+}
+.spec-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.spec-grid .field {
+  min-width: 0;
+}
+.spec-grid input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .stat-grid {

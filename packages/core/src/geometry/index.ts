@@ -5,3 +5,4 @@ export * from "./polygon.js";
 export * from "./boundingBox.js";
 export * from "./transform.js";
 export * from "./camera.js";
+export * from "./georeference.js";

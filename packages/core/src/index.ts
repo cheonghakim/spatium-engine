@@ -4,9 +4,12 @@ export * from "./serialization/index.js";
 export * from "./validation/index.js";
 export * from "./navigation/index.js";
 export * from "./query/index.js";
+export * from "./imdf/index.js";
 export { createId } from "./id.js";
 export {
   createEmptyProject,
+  createSite,
+  createConnector,
   createBuilding,
   createFloor,
   createSpace,

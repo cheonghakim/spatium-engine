@@ -43,7 +43,12 @@ describe("hitTest", () => {
     const floor = createFloor("1F", 1);
     const poi = createPOI(floor.id, { x: 2, y: 2 }, "store", "Coffee");
     floor.pois.push(poi);
-    const overlay: Overlay = { id: "m1", floorId: floor.id, type: "marker", position: { x: 2, y: 2 } };
+    const overlay: Overlay = {
+      id: "m1",
+      floorId: floor.id,
+      type: "marker",
+      position: { x: 2, y: 2 },
+    };
 
     const result = hitTest({ x: 2, y: 2 }, floor, [overlay]);
     expect(result).toEqual({ kind: "marker", overlay });
@@ -51,7 +56,12 @@ describe("hitTest", () => {
 
   it("ignores overlays on a different floor", () => {
     const floor = createFloor("1F", 1);
-    const overlay: Overlay = { id: "m1", floorId: "other-floor", type: "marker", position: { x: 0, y: 0 } };
+    const overlay: Overlay = {
+      id: "m1",
+      floorId: "other-floor",
+      type: "marker",
+      position: { x: 0, y: 0 },
+    };
     expect(hitTest({ x: 0, y: 0 }, floor, [overlay])).toBeNull();
   });
 

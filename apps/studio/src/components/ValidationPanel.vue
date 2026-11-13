@@ -56,6 +56,8 @@ function friendlyMessage(issue: ValidationIssue): string {
       return "공간의 윤곽선이 올바르지 않습니다 (꼭짓점이 3개 미만입니다).";
     case "self-intersecting-polygon":
       return "공간의 윤곽선이 스스로 교차하고 있습니다.";
+    case "invalid-hole":
+      return "공간의 구멍(기둥·보이드 등) 윤곽이 올바르지 않습니다 (외곽 밖·자기 교차·구멍끼리 겹침).";
     case "unknown-space-type":
       return "공간에 유형이 지정되지 않았습니다.";
     case "overlapping-spaces":
@@ -86,6 +88,22 @@ function friendlyMessage(issue: ValidationIssue): string {
       return "내비게이션 지점이 경로에 연결되어 있지 않습니다.";
     case "missing-floor-connection":
       return "다른 층으로 연결되는 수직 이동 경로가 없습니다.";
+    case "connector-too-few-stops":
+      return "수직 이동 설비(엘리베이터·계단 등)의 정차층이 2개 미만이라 층을 연결하지 못합니다.";
+    case "connector-duplicate-floor":
+      return "수직 이동 설비가 같은 층에 두 번 정차하도록 지정되어 있습니다.";
+    case "connector-missing-floor":
+      return "수직 이동 설비가 존재하지 않는 층을 정차층으로 참조하고 있습니다.";
+    case "connector-missing-node":
+      return "수직 이동 설비의 정차 지점이 존재하지 않는 내비게이션 지점을 참조하고 있습니다.";
+    case "connector-missing-space":
+      return "수직 이동 설비가 존재하지 않는 공간을 참조하고 있습니다.";
+    case "duplicate-floor-link":
+      return "손으로 이은 층간 연결이 수직 이동 설비와 중복됩니다. 노드 속성에서 '수직 이동 설비로 변환'하거나 연결을 지우세요.";
+    case "site-node-wrong-plane":
+      return "실외 내비게이션 지점이 단지(Site)가 아닌 다른 층에 속해 있습니다.";
+    case "duplicate-external-id":
+      return "외부 시스템 ID가 다른 객체와 중복됩니다. 고객사 데이터 연동 시 충돌합니다.";
     default:
       return issue.message;
   }

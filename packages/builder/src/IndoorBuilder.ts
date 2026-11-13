@@ -1,6 +1,7 @@
-import { findPOIInProject, findSpaceInProject, type IndoorProject } from "@indoor/core";
+import { findSpaceInProject, type IndoorProject } from "@indoor/core";
 import { IndoorRuntime, type RoutePlaybackOptions, type RuntimeEventMap } from "@indoor/runtime";
 import type { BuilderConfig } from "./BuilderConfig.js";
+import { BuilderControls } from "./controls.js";
 import type { Action } from "./actions.js";
 import { matchesConditions } from "./conditions.js";
 import { EventEmitter } from "./events/EventEmitter.js";
@@ -60,20 +61,36 @@ export class IndoorBuilder {
   private readonly project: IndoorProject;
   private config: BuilderConfig;
   private readonly emitter = new EventEmitter<BuilderEventMap>();
+  private readonly controls: BuilderControls;
 
   constructor(options: IndoorBuilderOptions) {
     this.project = options.project;
     this.config = options.config ?? DEFAULT_CONFIG;
     this.runtime = new IndoorRuntime({ container: options.container });
+    this.controls = new BuilderControls(resolveElement(options.container), this.runtime);
+    this.controls.apply(this.config.controls);
 
     for (const eventName of RUNTIME_EVENT_NAMES) {
       this.runtime.on(eventName, (payload) => this.handleRuntimeEvent(eventName, payload));
     }
 
     void this.runtime.load(this.project).then(() => {
+      // The host may have destroyed the runtime before this microtask ran; applying
+      // the config then would recreate renderers (e.g. a 3D camera mode) nobody disposes.
+      if (this.runtime.isDestroyed) return;
       this.applyConfig();
       this.runtime.start();
     });
+  }
+
+  /** Removes the on-map controls and destroys the runtime (WebGL, listeners). Idempotent. */
+  destroy(): void {
+    this.controls.destroy();
+    this.runtime.destroy();
+  }
+
+  get isDestroyed(): boolean {
+    return this.runtime.isDestroyed;
   }
 
   getConfig(): BuilderConfig {
@@ -82,6 +99,7 @@ export class IndoorBuilder {
 
   setConfig(config: BuilderConfig): void {
     this.config = config;
+    if (this.runtime.isDestroyed) return;
     this.applyConfig();
     this.emitter.emit("configChanged", { config });
   }
@@ -128,6 +146,7 @@ export class IndoorBuilder {
     });
     this.runtime.setCameraMode(camera.mode);
     this.runtime.setTheme(this.config.theme ?? {});
+    this.controls.apply(this.config.controls);
   }
 
   private handleRuntimeEvent(eventName: keyof RuntimeEventMap, payload: unknown): void {
@@ -151,15 +170,9 @@ export class IndoorBuilder {
     switch (action.type) {
       case "poi.focus": {
         const poiId = action.poiId ?? extractId(sourcePayload, "poi");
-        const found = poiId ? findPOIInProject(this.project, poiId) : null;
-        if (found) {
-          const state = this.runtime.camera.getState();
-          this.runtime.setCameraState({
-            center: found.poi.position,
-            zoom: state.zoom,
-            rotation: state.rotation,
-          });
-        } else if (poiId) {
+        // focusPOI switches to the POI's floor first, then centers both the 2D
+        // camera and the 3D view on it.
+        if (poiId && !this.runtime.focusPOI(poiId)) {
           this.emitWarning(`poi.focus: no POI found for id "${poiId}".`, { action });
         }
         break;
@@ -207,9 +220,13 @@ export class IndoorBuilder {
       case "camera.setMode3d":
         this.runtime.setCameraMode("3d");
         break;
-      case "route.start":
-        this.runtime.startRoute(action.fromNodeId, action.toNodeId);
+      case "route.start": {
+        const from = action.from ?? action.fromNodeId;
+        const to = action.to ?? action.toNodeId;
+        if (from === undefined || to === undefined) break; // validateBuilderConfig reports it
+        this.runtime.startRoute(from, to, action.options ?? {});
         break;
+      }
       case "route.clear":
         this.runtime.clearRoute();
         break;
@@ -219,6 +236,7 @@ export class IndoorBuilder {
         if (action.cameraMode !== undefined) options.cameraMode = action.cameraMode;
         if (action.curve !== undefined) options.curve = action.curve;
         if (action.durationSeconds !== undefined) options.durationSeconds = action.durationSeconds;
+        if (action.speed !== undefined) options.speed = action.speed;
         this.runtime.playRouteAnimation(options);
         break;
       }
@@ -241,6 +259,13 @@ export class IndoorBuilder {
         break;
     }
   }
+}
+
+function resolveElement(container: HTMLElement | string): HTMLElement {
+  if (typeof container !== "string") return container;
+  const element = document.querySelector<HTMLElement>(container);
+  if (!element) throw new Error(`IndoorBuilder: container "${container}" was not found.`);
+  return element;
 }
 
 function extractId(payload: unknown, key: "poi" | "space"): string | undefined {

@@ -8,6 +8,8 @@ import type { Entrance, EntranceType } from "./types/entrance.js";
 import type { POI, POIType } from "./types/poi.js";
 import type { Furniture, FurnitureType } from "./types/furniture.js";
 import type { Group } from "./types/group.js";
+import type { Connector, ConnectorStop, ConnectorType } from "./types/connector.js";
+import type { GeoAnchor, Site } from "./types/site.js";
 import type {
   NavigationEdge,
   NavigationEdgeType,
@@ -21,6 +23,33 @@ export function createEmptyProject(name: string): IndoorProject {
     id: createId(),
     name,
     buildings: [],
+  };
+}
+
+/** Outdoor nodes on the returned site's graph must use `site.id` as their floorId. */
+export function createSite(name: string, geoAnchor?: GeoAnchor): Site {
+  return {
+    id: createId(),
+    name,
+    ...(geoAnchor !== undefined ? { geoAnchor } : {}),
+    navigation: { nodes: [], edges: [] },
+  };
+}
+
+/**
+ * Stairs and escalators default to not wheelchair-accessible; elevators and
+ * ramps default to accessible. Override with `accessible` as needed.
+ */
+export function createConnector(
+  type: ConnectorType,
+  stops: ConnectorStop[] = [],
+  accessible: boolean = type === "elevator" || type === "ramp",
+): Connector {
+  return {
+    id: createId(),
+    type,
+    stops,
+    accessible,
   };
 }
 

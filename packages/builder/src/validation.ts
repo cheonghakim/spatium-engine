@@ -12,7 +12,7 @@ const CONDITION_OPERATORS: ReadonlySet<ConditionOperator> = new Set([
 ]);
 
 const ANIMATION_TYPES: ReadonlySet<string> = new Set(["marker", "flythrough"]);
-const ANIMATION_CAMERA_MODES: ReadonlySet<string> = new Set(["first", "third"]);
+const ANIMATION_CAMERA_MODES: ReadonlySet<string> = new Set(["first", "third", "overview"]);
 const ANIMATION_CURVES: ReadonlySet<string> = new Set(["straight", "smooth"]);
 
 function isNonEmptyString(value: unknown): value is string {
@@ -37,6 +37,23 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * returns plain strings since there's no shared object graph here to attach
  * severities/ids to.
  */
+function isRouteEndpoint(value: unknown): boolean {
+  if (isNonEmptyString(value)) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (isNonEmptyString(v.nodeId) || isNonEmptyString(v.poiId) || isNonEmptyString(v.spaceId)) {
+    return true;
+  }
+  const position = v.position as Record<string, unknown> | undefined;
+  return (
+    isNonEmptyString(v.floorId) &&
+    typeof position === "object" &&
+    position !== null &&
+    isFiniteNumber(position.x) &&
+    isFiniteNumber(position.y)
+  );
+}
+
 export function validateBuilderConfig(config: BuilderConfig): string[] {
   if (!isPlainObject(config)) {
     return ["config must be an object."];
@@ -178,10 +195,23 @@ function validateAction(action: Action, ruleLabel: string, index: number, issues
     case "route.stopAnimation":
       break;
     case "route.start":
-      if (!isNonEmptyString(action.fromNodeId))
-        issues.push(`${label} (route.start): missing required "fromNodeId" string.`);
-      if (!isNonEmptyString(action.toNodeId))
-        issues.push(`${label} (route.start): missing required "toNodeId" string.`);
+      for (const [endpointKey, nodeKey] of [
+        ["from", "fromNodeId"],
+        ["to", "toNodeId"],
+      ] as const) {
+        const endpoint = action[endpointKey];
+        if (endpoint !== undefined) {
+          if (!isRouteEndpoint(endpoint)) {
+            issues.push(
+              `${label} (route.start): "${endpointKey}" must be a node id, { nodeId }, { poiId }, { spaceId } or { floorId, position: { x, y } }.`,
+            );
+          }
+        } else if (!isNonEmptyString(action[nodeKey])) {
+          issues.push(
+            `${label} (route.start): missing required "${nodeKey}" string (or "${endpointKey}" endpoint).`,
+          );
+        }
+      }
       break;
     case "route.playAnimation":
       if (action.animationType !== undefined && !ANIMATION_TYPES.has(action.animationType)) {
@@ -190,7 +220,9 @@ function validateAction(action: Action, ruleLabel: string, index: number, issues
         );
       }
       if (action.cameraMode !== undefined && !ANIMATION_CAMERA_MODES.has(action.cameraMode)) {
-        issues.push(`${label} (route.playAnimation): "cameraMode" must be "first" or "third".`);
+        issues.push(
+          `${label} (route.playAnimation): "cameraMode" must be "first", "third" or "overview".`,
+        );
       }
       if (action.curve !== undefined && !ANIMATION_CURVES.has(action.curve)) {
         issues.push(`${label} (route.playAnimation): "curve" must be "straight" or "smooth".`);
@@ -198,6 +230,11 @@ function validateAction(action: Action, ruleLabel: string, index: number, issues
       if (action.durationSeconds !== undefined && !isFiniteNumber(action.durationSeconds)) {
         issues.push(
           `${label} (route.playAnimation): "durationSeconds" must be a number when present.`,
+        );
+      }
+      if (action.speed !== undefined && !(isFiniteNumber(action.speed) && action.speed > 0)) {
+        issues.push(
+          `${label} (route.playAnimation): "speed" must be a positive number when present.`,
         );
       }
       break;

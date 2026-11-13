@@ -61,7 +61,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for more on the workspace setup, build or
 
 ### License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Third-party components and their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ### Project layout
 
@@ -139,7 +139,7 @@ pnpm format        # Prettier로 저장소 전체 포맷팅
 
 ### 라이센스
 
-[MIT](LICENSE)
+[MIT](LICENSE). 사용한 서드파티 구성 요소와 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있습니다.
 
 ### 프로젝트 구조
 

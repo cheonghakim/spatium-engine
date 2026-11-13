@@ -24,12 +24,18 @@ export class GridSnap implements SnapProvider {
     return this.enabled;
   }
 
+  /** The grid size while snapping is on, else null — for providers that align to it too. */
+  activeGridSize(): number | null {
+    return this.enabled ? this.gridSize : null;
+  }
+
   getSnap(point: Point, _context: SnapContext): SnapResult | null {
     if (!this.enabled) return null;
     return {
       point: {
-        x: Math.round(point.x / this.gridSize) * this.gridSize,
-        y: Math.round(point.y / this.gridSize) * this.gridSize,
+        // `+ 0` turns -0 (from rounding small negatives) into 0.
+        x: Math.round(point.x / this.gridSize) * this.gridSize + 0,
+        y: Math.round(point.y / this.gridSize) * this.gridSize + 0,
       },
       type: "grid",
     };

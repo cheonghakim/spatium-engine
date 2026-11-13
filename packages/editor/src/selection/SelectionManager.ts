@@ -10,8 +10,9 @@ function sameEntry(a: SelectionEntry, b: SelectionEntry): boolean {
 }
 
 /**
- * Tracks the current selection. Single-selection today via select(); add()/
- * remove() already support extending to multi-selection later.
+ * Tracks the current selection. select() replaces it with one entry;
+ * add()/remove()/toggle() extend it (Shift/Ctrl+click), and setAll() replaces
+ * it wholesale with a single change notification (marquee selection).
  */
 export class SelectionManager {
   private entries: SelectionEntry[] = [];
@@ -39,6 +40,23 @@ export class SelectionManager {
     if (this.entries.length !== before) this.onChange(this.entries);
   }
 
+  /** Adds the entry if absent, removes it if present (Shift/Ctrl+click). */
+  toggle(id: string, vertexIndex?: number): void {
+    if (this.isSelected(id, vertexIndex)) this.remove(id, vertexIndex);
+    else this.add(id, vertexIndex);
+  }
+
+  /** Replaces the whole selection (duplicates dropped) with one change notification. */
+  setAll(entries: readonly SelectionEntry[]): void {
+    const next: SelectionEntry[] = [];
+    for (const entry of entries)
+      if (!next.some((e) => sameEntry(e, entry))) next.push({ ...entry });
+    if (next.length === this.entries.length && next.every((e, i) => sameEntry(e, this.entries[i]!)))
+      return;
+    this.entries = next;
+    this.onChange(this.entries);
+  }
+
   clear(): void {
     if (this.entries.length === 0) return;
     this.entries = [];
@@ -46,7 +64,9 @@ export class SelectionManager {
   }
 
   isSelected(id: string, vertexIndex?: number): boolean {
-    return this.entries.some((e) => sameEntry(e, vertexIndex === undefined ? { id } : { id, vertexIndex }));
+    return this.entries.some((e) =>
+      sameEntry(e, vertexIndex === undefined ? { id } : { id, vertexIndex }),
+    );
   }
 
   get current(): readonly SelectionEntry[] {

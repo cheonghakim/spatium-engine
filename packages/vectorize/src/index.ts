@@ -28,3 +28,20 @@ export {
   imageCenter,
 } from "./deskew.js";
 export type { DeskewOptions } from "./deskew.js";
+export {
+  MAX_ANALYSIS_PIXELS,
+  MAX_WORKING_PIXELS,
+  MAX_WORKING_SIDE,
+  planAnalysisResolution,
+  sampleAffineTransform,
+  applyAffineTransform,
+  scaleTransformToWorkingResolution,
+  scaleVectorizeOptions,
+  vectorizeAtWorkingResolution,
+} from "./analysisBudget.js";
+export type {
+  AnalysisLimits,
+  AnalysisPlan,
+  AffinePixelTransform,
+  WorkingResolutionInput,
+} from "./analysisBudget.js";

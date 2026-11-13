@@ -57,6 +57,7 @@ export function render2d(ctx: CanvasRenderingContext2D, state: Render2DState): v
         colors.spaceFill,
         emphasized ? colors.accent : colors.spaceStroke,
         emphasized,
+        space.holes,
       );
     }
 
@@ -151,20 +152,25 @@ function drawPolygon(
   fillStyle: string,
   strokeStyle: string,
   emphasized = false,
+  holes: readonly (readonly Point[])[] = [],
 ): void {
   if (points.length === 0) return;
 
   ctx.beginPath();
-  const first = camera.worldToScreen(points[0] as Point);
-  ctx.moveTo(first.x, first.y);
-  for (let i = 1; i < points.length; i++) {
-    const screen = camera.worldToScreen(points[i] as Point);
-    ctx.lineTo(screen.x, screen.y);
+  for (const ring of [points, ...holes]) {
+    if (ring.length === 0) continue;
+    const first = camera.worldToScreen(ring[0] as Point);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < ring.length; i++) {
+      const screen = camera.worldToScreen(ring[i] as Point);
+      ctx.lineTo(screen.x, screen.y);
+    }
+    ctx.closePath();
   }
-  ctx.closePath();
 
   ctx.fillStyle = fillStyle;
-  ctx.fill();
+  // even-odd leaves holes unfilled regardless of ring winding.
+  ctx.fill("evenodd");
   ctx.strokeStyle = strokeStyle;
   ctx.lineWidth = emphasized ? 3 : 2;
   ctx.stroke();

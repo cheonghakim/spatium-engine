@@ -93,16 +93,118 @@ describe("Renderer3D", () => {
     renderer.dispose();
   });
 
-  it("playRoute() no-ops for an empty or single-point path", () => {
+  it("playRoute() no-ops for no legs or only single-point legs", () => {
     const renderer = new Renderer3D(container);
 
     renderer.playRoute([], {});
     expect(renderer.isRoutePlaying()).toBe(false);
 
-    renderer.playRoute([{ x: 0, y: 0 }], {});
+    renderer.playRoute([{ points: [{ x: 0, y: 0 }] }], {});
     expect(renderer.isRoutePlaying()).toBe(false);
 
     renderer.dispose();
+  });
+
+  describe("route playback", () => {
+    const legs = [
+      {
+        floorId: "f1",
+        points: [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+        ],
+      },
+      {
+        floorId: "f2",
+        points: [
+          { x: 10, y: 0 },
+          { x: 10, y: 30 },
+        ],
+      },
+    ];
+
+    it("plays across floors, asking the host to show each leg's floor", () => {
+      const onRouteLegChange = vi.fn();
+      const renderer = new Renderer3D(container, { onRouteLegChange });
+
+      renderer.playRoute(legs, { curve: "straight" });
+      expect(onRouteLegChange).toHaveBeenLastCalledWith("f1", 0);
+      expect(renderer.getRoutePlaybackState()).toMatchObject({
+        progress: 0,
+        totalDistance: 40,
+        legIndex: 0,
+        legCount: 2,
+        floorId: "f1",
+      });
+
+      renderer.seekRoute(0.5); // 20 m: 10 m into the second leg
+      expect(onRouteLegChange).toHaveBeenLastCalledWith("f2", 1);
+      expect(renderer.getRoutePlaybackState()).toMatchObject({ distance: 20, floorId: "f2" });
+
+      renderer.seekRoute(0.1);
+      expect(onRouteLegChange).toHaveBeenLastCalledWith("f1", 0);
+      renderer.dispose();
+    });
+
+    it("pauses, resumes and changes speed; remaining time follows the speed", () => {
+      const renderer = new Renderer3D(container);
+      renderer.playRoute(legs, { curve: "straight", cameraMode: "overview" });
+
+      const atWalk = renderer.getRoutePlaybackState()!;
+      expect(atWalk.remainingSeconds).toBeCloseTo(40 / 1.3);
+      renderer.setRoutePlaybackSpeed(2);
+      expect(renderer.getRoutePlaybackState()!.remainingSeconds).toBeCloseTo(40 / 2.6);
+      renderer.setRoutePlaybackSpeed(1000);
+      expect(renderer.getRoutePlaybackState()!.speed).toBe(16);
+
+      renderer.pauseRoute();
+      expect(renderer.getRoutePlaybackState()!.paused).toBe(true);
+      expect(renderer.isRoutePlaying()).toBe(true);
+      renderer.resumeRoute();
+      expect(renderer.getRoutePlaybackState()!.paused).toBe(false);
+      renderer.dispose();
+    });
+
+    it("has no duration cap: a long route keeps walking pace", () => {
+      const renderer = new Renderer3D(container);
+      renderer.playRoute(
+        [
+          {
+            points: [
+              { x: 0, y: 0 },
+              { x: 500, y: 0 },
+            ],
+          },
+        ],
+        {},
+      );
+      expect(renderer.getRoutePlaybackState()!.remainingSeconds).toBeCloseTo(500 / 1.3);
+      renderer.dispose();
+    });
+
+    it("keeps relative progress when the route shape changes mid-playback", () => {
+      const renderer = new Renderer3D(container);
+      renderer.playRoute(legs, { curve: "straight" });
+      renderer.seekRoute(0.5);
+      renderer.setRouteShape("smooth");
+      const state = renderer.getRoutePlaybackState()!;
+      expect(state.progress).toBeCloseTo(0.5);
+      expect(state.totalDistance).toBeLessThanOrEqual(40);
+      expect(renderer.getRouteShape()).toBe("smooth");
+      renderer.dispose();
+    });
+
+    it("hands the camera back where it was when a follow playback stops", () => {
+      const renderer = new Renderer3D(container);
+      const camera = (renderer as unknown as { camera: { position: { clone(): unknown } } }).camera;
+      const before = camera.position.clone();
+      renderer.playRoute(legs, { cameraMode: "third" });
+      expect(camera.position).not.toEqual(before);
+      renderer.stopRoute();
+      expect(camera.position).toEqual(before);
+      expect(renderer.getRoutePlaybackState()).toBeNull();
+      renderer.dispose();
+    });
   });
 
   it("update() with an undefined floor and empty overlays/route doesn't throw", () => {

@@ -67,7 +67,7 @@ export interface DraftSpaceInput {
 
 export class DraftManager {
   private state: DraftState | null = null;
-  selectedId: string | null = null;
+  private selected: string[] = [];
   private past: DraftState[] = [];
   private future: DraftState[] = [];
   private beforeEdit: DraftState | null = null;
@@ -78,10 +78,52 @@ export class DraftManager {
   get canRedo(): boolean {
     return this.future.length > 0;
   }
+  /** Every selected draft entry id (walls, rooms, element candidates), in selection order. */
+  get selectedIds(): readonly string[] {
+    return this.selected;
+  }
+  /** The selected entry when exactly one is selected — single-item editors (coordinates, handles) use this. */
+  get selectedId(): string | null {
+    return this.selected.length === 1 ? this.selected[0]! : null;
+  }
+  isSelected(id: string): boolean {
+    return this.selected.includes(id);
+  }
   select(id: string | null): void {
-    this.selectedId = id;
+    this.setSelection(id === null ? [] : [id]);
+  }
+  /** Adds the id to the selection, or removes it if already selected (Shift/Ctrl+click). */
+  toggleSelected(id: string): void {
+    this.setSelection(
+      this.isSelected(id) ? this.selected.filter((s) => s !== id) : [...this.selected, id],
+    );
+  }
+  setSelection(ids: readonly string[]): void {
+    this.selected = [...new Set(ids)];
     if (this.state) this.state = { ...this.state };
     this.onChange();
+  }
+  /**
+   * Includes/excludes every given entry as ONE undoable draft edit (bulk
+   * review of a multi-selection). Element candidates are only ever included
+   * here when explicitly selected — setAllAccepted still never auto-approves them.
+   */
+  setAccepted(ids: readonly string[], accepted: boolean): void {
+    if (!this.state) return;
+    const set = new Set(ids);
+    const changes =
+      this.state.walls.some((w) => set.has(w.id) && w.accepted !== accepted) ||
+      this.state.spaces.some((s) => set.has(s.id) && s.accepted !== accepted) ||
+      this.state.elements.some((e) => set.has(e.id) && e.accepted !== accepted);
+    if (!changes) return;
+    this.checkpoint();
+    this.state = {
+      ...this.state,
+      walls: this.state.walls.map((w) => (set.has(w.id) ? { ...w, accepted } : w)),
+      spaces: this.state.spaces.map((s) => (set.has(s.id) ? { ...s, accepted } : s)),
+      elements: this.state.elements.map((e) => (set.has(e.id) ? { ...e, accepted } : e)),
+    };
+    this.onChange(true);
   }
   private checkpoint(): void {
     if (!this.state) return;
@@ -191,7 +233,7 @@ export class DraftManager {
     this.past = [];
     this.future = [];
     this.beforeEdit = null;
-    this.selectedId = null;
+    this.selected = [];
     this.state = {
       ...(floorId ? { floorId } : {}),
       walls: walls.map((w) => ({
@@ -350,7 +392,7 @@ export class DraftManager {
     this.past = [];
     this.future = [];
     this.beforeEdit = null;
-    this.selectedId = null;
+    this.selected = [];
     this.onChange();
   }
 

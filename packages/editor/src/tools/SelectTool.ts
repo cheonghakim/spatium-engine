@@ -1,7 +1,7 @@
 import {
   distance,
   distanceToSegment,
-  isPointInPolygon,
+  isPointInSpace,
   FURNITURE_PRESETS,
   type Entrance,
   type Floor,
@@ -24,9 +24,21 @@ import {
 import { MovePOICommand } from "../commands/POICommands.js";
 import { MoveFurnitureCommand } from "../commands/FurnitureCommands.js";
 import { MoveWallCommand } from "../commands/WallCommands.js";
-import { buildDeleteCommand, stripFromGroups } from "../commands/buildDeleteCommand.js";
+import { buildDeleteSelectionCommand } from "../commands/buildDeleteCommand.js";
 import { findObjectKind, type SelectableKind } from "../selection/findObjectKind.js";
 import { findGroupContaining } from "../selection/findGroupContaining.js";
+import type { SelectionEntry } from "../selection/SelectionManager.js";
+import {
+  MARQUEE_THRESHOLD_PX,
+  marqueeMode,
+  marqueeRect,
+  pointInRect,
+  polygonInMarquee,
+  segmentInMarquee,
+  type Marquee,
+  type MarqueeMode,
+  type Rect,
+} from "../selection/marquee.js";
 import type { EditorTool, EditorKeyboardEvent, EditorPointerEvent } from "./EditorTool.js";
 import type { ToolContext } from "./ToolContext.js";
 
@@ -84,7 +96,7 @@ type GroupMember =
   | { kind: "entrance"; obj: Entrance; original: Point }
   | { kind: "navigationNode"; obj: NavigationNode; original: Point }
   | { kind: "wall"; obj: Wall; originalStart: Point; originalEnd: Point }
-  | { kind: "space"; obj: Space; originalPolygon: Point[] };
+  | { kind: "space"; obj: Space; originalPolygon: Point[]; originalHoles: Point[][] | undefined };
 
 function snapshotGroupMembers(floor: Floor, group: Group): GroupMember[] {
   const members: GroupMember[] = [];
@@ -108,7 +120,13 @@ function snapshotGroupMembers(floor: Floor, group: Group): GroupMember[] {
         members.push({ kind, obj, originalStart: { ...obj.start }, originalEnd: { ...obj.end } });
     } else if (kind === "space") {
       const obj = floor.spaces.find((s) => s.id === id);
-      if (obj) members.push({ kind, obj, originalPolygon: obj.polygon.map((p) => ({ ...p })) });
+      if (obj)
+        members.push({
+          kind,
+          obj,
+          originalPolygon: obj.polygon.map((p) => ({ ...p })),
+          originalHoles: obj.holes?.map((hole) => hole.map((p) => ({ ...p }))),
+        });
     }
   }
   return members;
@@ -122,6 +140,11 @@ function applyGroupDelta(members: readonly GroupMember[], dx: number, dy: number
       member.obj.end = { x: member.originalEnd.x + dx, y: member.originalEnd.y + dy };
     } else if (member.kind === "space") {
       member.obj.polygon = member.originalPolygon.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      if (member.originalHoles) {
+        member.obj.holes = member.originalHoles.map((hole) =>
+          hole.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+        );
+      }
     } else {
       member.obj.position = { x: member.original.x + dx, y: member.original.y + dy };
     }
@@ -136,6 +159,7 @@ function restoreGroupMembers(members: readonly GroupMember[]): void {
       member.obj.end = member.originalEnd;
     } else if (member.kind === "space") {
       member.obj.polygon = member.originalPolygon;
+      if (member.originalHoles) member.obj.holes = member.originalHoles;
     } else {
       member.obj.position = member.original;
     }
@@ -168,6 +192,11 @@ function buildGroupMoveCommands(members: readonly GroupMember[]): Command[] {
       const finalPolygon = member.obj.polygon.map((p) => ({ ...p }));
       member.obj.polygon = member.originalPolygon;
       commands.push(new ChangePropertyCommand(member.obj, "polygon", finalPolygon, "Move Space"));
+      if (member.originalHoles && member.obj.holes) {
+        const finalHoles = member.obj.holes;
+        member.obj.holes = member.originalHoles;
+        commands.push(new ChangePropertyCommand(member.obj, "holes", finalHoles, "Move Space"));
+      }
     } else {
       const finalPosition = { ...member.obj.position };
       member.obj.position = member.original;
@@ -184,6 +213,18 @@ interface GroupDrag {
   origin: Point;
 }
 
+/** A press on empty canvas (or on a room, which has no body-drag) that may grow into a rubber-band selection. */
+interface PendingMarquee {
+  start: Point;
+  end: Point;
+  startScreen: Point;
+  /** True once the pointer travelled past MARQUEE_THRESHOLD_PX - before that it's still just a click. */
+  active: boolean;
+  additive: boolean;
+  /** Selection at press time, which an additive (Shift/Ctrl) marquee extends. */
+  base: readonly SelectionEntry[];
+}
+
 export class SelectTool implements EditorTool {
   readonly id = "select";
 
@@ -191,6 +232,7 @@ export class SelectTool implements EditorTool {
   private furnitureDrag: FurnitureDrag | null = null;
   private groupDrag: GroupDrag | null = null;
   private vertexDrag: VertexDrag | null = null;
+  private marquee: PendingMarquee | null = null;
   private wallDrag: {
     wall: Wall;
     start: Point;
@@ -202,6 +244,11 @@ export class SelectTool implements EditorTool {
   constructor(private readonly context: ToolContext) {}
 
   activate(): void {}
+
+  /** The rubber-band box being dragged (world coordinates), for the canvas overlay. */
+  getMarquee(): Marquee | null {
+    return this.marquee?.active ? { start: this.marquee.start, end: this.marquee.end } : null;
+  }
 
   deactivate(): void {
     if (this.wallDrag) {
@@ -218,6 +265,7 @@ export class SelectTool implements EditorTool {
     this.furnitureDrag = null;
     this.groupDrag = null;
     this.vertexDrag = null;
+    this.marquee = null;
   }
 
   onPointerDown(event: EditorPointerEvent): void {
@@ -226,12 +274,26 @@ export class SelectTool implements EditorTool {
     if (!floor) return;
 
     const hitRadiusWorld = HIT_RADIUS_PX / this.context.camera.getState().zoom;
+    // Shift or Ctrl extends the selection instead of replacing it.
+    const additive = event.shiftKey || event.ctrlKey;
+    const baseSelection = [...this.context.selection.current];
+    const startMarquee = (): void => {
+      this.marquee = {
+        start: { ...event.worldPoint },
+        end: { ...event.worldPoint },
+        startScreen: { ...event.screenPoint },
+        active: false,
+        additive,
+        base: baseSelection,
+      };
+    };
 
     // If a Space is already selected, its own vertices/edges take priority —
     // click a vertex to drag it, or click its boundary to insert a new one.
-    const currentEntry = this.context.selection.current[0];
+    // Only with a single selection: a multi-selection shows no such handles.
+    const currentEntry = baseSelection.length === 1 ? baseSelection[0] : undefined;
     const selectedWall = floor.walls.find((w) => w.id === currentEntry?.id);
-    if (selectedWall && !event.shiftKey) {
+    if (selectedWall && !additive) {
       const handle =
         distance(selectedWall.start, event.worldPoint) <= hitRadiusWorld
           ? "start"
@@ -249,7 +311,7 @@ export class SelectTool implements EditorTool {
         return;
       }
     }
-    if (currentEntry && currentEntry.vertexIndex === undefined && !event.shiftKey) {
+    if (currentEntry && currentEntry.vertexIndex === undefined && !additive) {
       const selectedSpace = floor.spaces.find((s) => s.id === currentEntry.id);
       if (selectedSpace) {
         const vertexIndex = findVertexIndex(event.worldPoint, selectedSpace, hitRadiusWorld);
@@ -288,17 +350,23 @@ export class SelectTool implements EditorTool {
     }
 
     if (!hit) {
-      if (!event.shiftKey) this.context.selection.clear();
+      if (!additive) this.context.selection.clear();
+      startMarquee();
       return;
     }
 
-    if (event.shiftKey) {
-      this.context.selection.add(hit.id);
+    if (additive) {
+      this.context.selection.toggle(hit.id);
     } else {
       this.context.selection.select(hit.id);
     }
 
-    if (hit.kind === "group" && !event.shiftKey) {
+    // Rooms have no body-drag, so pressing inside one and dragging draws a
+    // selection box — after vectorization rooms cover most of the canvas,
+    // so "start the box on empty space" alone would rarely be possible.
+    if (hit.kind === "space") startMarquee();
+
+    if (hit.kind === "group" && !additive) {
       const group = floor.groups.find((g) => g.id === hit.id);
       if (group) {
         this.groupDrag = {
@@ -310,18 +378,18 @@ export class SelectTool implements EditorTool {
     }
     if (hit.kind === "poi") {
       const poi = floor.pois.find((p) => p.id === hit.id);
-      if (poi) this.drag = { poi, originalPosition: { ...poi.position } };
+      if (poi && !additive) this.drag = { poi, originalPosition: { ...poi.position } };
     }
     if (hit.kind === "furniture") {
       const item = floor.furniture.find((f) => f.id === hit.id);
-      if (item && !event.shiftKey)
+      if (item && !additive)
         this.furnitureDrag = {
           item,
           originalPosition: { ...item.position },
           origin: { ...event.worldPoint },
         };
     }
-    if (hit.kind === "wall" && !event.shiftKey) {
+    if (hit.kind === "wall" && !additive) {
       const wall = floor.walls.find((w) => w.id === hit.id)!;
       this.wallDrag = {
         wall,
@@ -341,6 +409,20 @@ export class SelectTool implements EditorTool {
   }
 
   onPointerMove(event: EditorPointerEvent): void {
+    if (this.marquee) {
+      const marquee = this.marquee;
+      marquee.end = { ...event.worldPoint };
+      if (
+        !marquee.active &&
+        Math.hypot(
+          event.screenPoint.x - marquee.startScreen.x,
+          event.screenPoint.y - marquee.startScreen.y,
+        ) >= MARQUEE_THRESHOLD_PX
+      )
+        marquee.active = true;
+      if (marquee.active) this.context.requestRender();
+      return;
+    }
     if (this.wallDrag) {
       const drag = this.wallDrag;
       let point = event.worldPoint;
@@ -413,6 +495,12 @@ export class SelectTool implements EditorTool {
   }
 
   onPointerUp(): void {
+    if (this.marquee) {
+      const marquee = this.marquee;
+      this.marquee = null;
+      if (marquee.active) this.applyMarquee(marquee);
+      return;
+    }
     if (this.wallDrag) {
       const { wall, start, end } = this.wallDrag;
       const finalStart = { ...wall.start },
@@ -448,7 +536,7 @@ export class SelectTool implements EditorTool {
         const commands: Command[] = [new MoveFurnitureCommand(item, finalPosition)];
         const spaceId = this.context
           .getActiveFloor()
-          ?.spaces.find((space) => isPointInPolygon(finalPosition, space.polygon))?.id;
+          ?.spaces.find((space) => isPointInSpace(space, finalPosition))?.id;
         if (item.spaceId !== spaceId)
           commands.push(
             new ChangePropertyCommand(item, "spaceId", spaceId, "Update Furniture Space"),
@@ -479,10 +567,11 @@ export class SelectTool implements EditorTool {
     const floor = this.context.getActiveFloor();
     if (!floor) return;
 
-    const entry = this.context.selection.current[0];
+    const entries = this.context.selection.current;
+    const entry = entries[0];
     if (!entry) return;
 
-    if (entry.vertexIndex !== undefined) {
+    if (entries.length === 1 && entry.vertexIndex !== undefined) {
       const space = floor.spaces.find((s) => s.id === entry.id);
       if (space && space.polygon.length > 3) {
         this.context.executeCommand(new DeleteVertexCommand(space, entry.vertexIndex));
@@ -491,20 +580,28 @@ export class SelectTool implements EditorTool {
       return;
     }
 
-    const kind = findObjectKind(floor, entry.id);
-    if (!kind) return;
-    const commands: Command[] = [
-      buildDeleteCommand(floor, entry.id, kind, this.context.findNodeBuilding),
-    ];
-    // Deleting a single grouped object (as opposed to deleting the whole
-    // group, handled inside buildDeleteCommand's "group" branch) must also
-    // drop it from its group's membership, dissolving the group if that
-    // leaves it with ≤1 member.
-    if (kind !== "group") commands.push(...stripFromGroups(floor, entry.id));
-    this.context.executeCommand(
-      commands.length > 1 ? new CompoundCommand("Delete", commands) : commands[0]!,
+    // One undo step for the whole selection; grouped objects are also
+    // dropped from their group (dissolving it if <=1 member remains).
+    const command = buildDeleteSelectionCommand(
+      floor,
+      entries.filter((e) => e.vertexIndex === undefined).map((e) => e.id),
+      this.context.findNodeBuilding,
+      (floorId) => this.context.findFloorBuilding?.(floorId),
     );
+    if (!command) return;
+    this.context.executeCommand(command);
     this.context.selection.clear();
+  }
+
+  private applyMarquee(marquee: PendingMarquee): void {
+    const floor = this.context.getActiveFloor();
+    if (!floor) return;
+    const ids = idsInMarquee(floor, marqueeRect(marquee), marqueeMode(marquee)).map(
+      (id) => findGroupContaining(floor, id)?.id ?? id,
+    );
+    const base = marquee.additive ? marquee.base.filter((e) => e.vertexIndex === undefined) : [];
+    this.context.selection.setAll([...base, ...ids.map((id) => ({ id }))]);
+    this.context.requestRender();
   }
 
   private hitTest(point: Point, floor: Floor, hitRadiusWorld: number): HitResult | null {
@@ -542,10 +639,30 @@ export class SelectTool implements EditorTool {
     }
     for (let i = floor.spaces.length - 1; i >= 0; i--) {
       const space = floor.spaces[i];
-      if (space && isPointInPolygon(point, space.polygon)) return { id: space.id, kind: "space" };
+      if (space && isPointInSpace(space, point)) return { id: space.id, kind: "space" };
     }
     return null;
   }
+}
+
+/** Every object on `floor` the marquee picks, in hit-test priority order. */
+function idsInMarquee(floor: Floor, rect: Rect, mode: MarqueeMode): string[] {
+  const ids: string[] = [];
+  const inside = (p: Point) => pointInRect(p, rect);
+  for (const poi of floor.pois) if (inside(poi.position)) ids.push(poi.id);
+  for (const item of floor.furniture) if (inside(item.position)) ids.push(item.id);
+  for (const entrance of floor.entrances) if (inside(entrance.position)) ids.push(entrance.id);
+  for (const node of floor.navigation.nodes) if (inside(node.position)) ids.push(node.id);
+  for (const edge of floor.navigation.edges) {
+    const from = floor.navigation.nodes.find((n) => n.id === edge.from);
+    const to = floor.navigation.nodes.find((n) => n.id === edge.to);
+    if (from && to && segmentInMarquee(from.position, to.position, rect, mode)) ids.push(edge.id);
+  }
+  for (const wall of floor.walls)
+    if (segmentInMarquee(wall.start, wall.end, rect, mode)) ids.push(wall.id);
+  for (const space of floor.spaces)
+    if (polygonInMarquee(space.polygon, rect, mode)) ids.push(space.id);
+  return ids;
 }
 
 function findVertexIndex(point: Point, space: Space, hitRadiusWorld: number): number | null {

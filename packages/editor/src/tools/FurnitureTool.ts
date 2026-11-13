@@ -1,6 +1,6 @@
 import {
   createFurniture,
-  isPointInPolygon,
+  isPointInSpace,
   FURNITURE_PRESETS,
   isModelData,
   type Furniture,
@@ -58,7 +58,7 @@ export class FurnitureTool implements EditorTool {
     if (!floor) return;
 
     const point = this.context.snapping.resolve(event.worldPoint, { floor });
-    const containingSpace = floor.spaces.find((space) => isPointInPolygon(point, space.polygon));
+    const containingSpace = floor.spaces.find((space) => isPointInSpace(space, point));
 
     const item = { ...createFurniture(floor.id, point, this.template.type), ...this.template };
     if (containingSpace) item.spaceId = containingSpace.id;

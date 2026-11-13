@@ -108,6 +108,25 @@ describe("IndoorBuilder", () => {
     expect(builder.runtime.camera.getState().center).toEqual(poi.position);
   });
 
+  it("poi.focus on a POI of another floor switches to that floor first", async () => {
+    const { project, building, floor } = makeProject();
+    const upper = createFloor("2F", 2, 4);
+    const target = createPOI(upper.id, { x: 30, y: 40 }, "store", "Upstairs");
+    upper.pois.push(target);
+    building.floors.push(upper);
+    const builder = new IndoorBuilder({
+      container,
+      project,
+      config: baseConfig({
+        events: [{ event: "map.loaded", actions: [{ type: "poi.focus", poiId: target.id }] }],
+      }),
+    });
+    await flushLoad();
+    expect(builder.runtime.getActiveFloor()?.id).toBe(upper.id);
+    expect(builder.runtime.getActiveFloor()?.id).not.toBe(floor.id);
+    expect(builder.runtime.camera.getState().center).toEqual(target.position);
+  });
+
   it("a condition that doesn't match skips the action", async () => {
     const { project, poi } = makeProject();
     const builder = new IndoorBuilder({
@@ -163,6 +182,66 @@ describe("IndoorBuilder", () => {
     builder.runtime.setFloor(floor2.id);
 
     expect(startedHandler).toHaveBeenCalledWith({ fromNodeId: nodeA.id, toNodeId: nodeB.id });
+  });
+
+  it("route.start accepts runtime endpoints (POI) and route options", async () => {
+    const project = createEmptyProject("P");
+    const building = createBuilding("B1");
+    const floor = createFloor("1F", 1);
+    const floor2 = createFloor("2F", 2);
+    const nodeA = createNavigationNode(floor.id, { x: 0, y: 0 });
+    const nodeB = createNavigationNode(floor.id, { x: 3, y: 4 });
+    floor.navigation.nodes.push(nodeA, nodeB);
+    // Not wheelchair accessible.
+    floor.navigation.edges.push(createNavigationEdge(nodeA.id, nodeB.id, 5, "walk", false));
+    const poi = createPOI(floor.id, { x: 3, y: 5 }, "store", "Shop");
+    floor.pois.push(poi);
+    building.floors.push(floor, floor2);
+    project.buildings.push(building);
+
+    const config = (options?: { requireAccessible: boolean }) =>
+      baseConfig({
+        events: [
+          {
+            event: "floor.changed",
+            actions: [
+              {
+                type: "route.start",
+                from: nodeA.id,
+                to: { poiId: poi.id },
+                ...(options ? { options } : {}),
+              },
+            ],
+          },
+        ],
+      });
+
+    const plain = new IndoorBuilder({ container, project, config: config() });
+    await flushLoad();
+    const started = vi.fn();
+    plain.runtime.on("route.started", started);
+    plain.runtime.setFloor(floor2.id);
+    expect(started).toHaveBeenLastCalledWith({
+      fromNodeId: nodeA.id,
+      toNodeId: nodeB.id,
+      to: { poiId: poi.id },
+    });
+
+    const accessible = new IndoorBuilder({
+      container,
+      project,
+      config: config({ requireAccessible: true }),
+    });
+    await flushLoad();
+    const startedAccessible = vi.fn();
+    accessible.runtime.on("route.started", startedAccessible);
+    accessible.runtime.setFloor(floor2.id);
+    // No accessible way to the shop: no route, so no resolved goal node.
+    expect(startedAccessible).toHaveBeenLastCalledWith({
+      fromNodeId: nodeA.id,
+      toNodeId: "",
+      to: { poiId: poi.id },
+    });
   });
 
   it("marker.add and marker.remove actions manage runtime overlays", async () => {
@@ -300,6 +379,7 @@ describe("IndoorBuilder", () => {
                 cameraMode: "third",
                 curve: "smooth",
                 durationSeconds: 4,
+                speed: 2,
               },
             ],
           },
@@ -316,6 +396,7 @@ describe("IndoorBuilder", () => {
       cameraMode: "third",
       curve: "smooth",
       durationSeconds: 4,
+      speed: 2,
     });
   });
 
@@ -545,5 +626,52 @@ describe("IndoorBuilder", () => {
 
     expect(warningHandler).toHaveBeenCalledTimes(1);
     expect(warningHandler.mock.calls[0]![0]!.message).toContain("startsWith");
+  });
+});
+
+describe("built-in controls (BuilderConfig.controls)", () => {
+  it("renders a floor selector and 2D/3D toggle that drive the runtime", async () => {
+    const { project, building } = makeProject();
+    const upper = createFloor("2F", 2, 4);
+    building.floors.push(upper);
+    const builder = new IndoorBuilder({ container, project, config: baseConfig() });
+    await flushLoad();
+
+    const select = container.querySelector<HTMLSelectElement>(".indoor-builder-floor-select")!;
+    const toggle = container.querySelector<HTMLButtonElement>(".indoor-builder-camera-toggle")!;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["1F", "2F"]);
+    expect(select.style.display).toBe("");
+    expect(toggle.style.display).toBe("");
+
+    select.value = upper.id;
+    select.dispatchEvent(new Event("change"));
+    expect(builder.runtime.getActiveFloor()?.id).toBe(upper.id);
+
+    // jsdom has no WebGL: the toggle reports 3D as unavailable instead of pretending.
+    toggle.click();
+    expect(toggle.disabled).toBe(true);
+  });
+
+  it("hides the controls when the config turns them off, and destroy() removes them", async () => {
+    const { project } = makeProject();
+    const builder = new IndoorBuilder({
+      container,
+      project,
+      config: baseConfig({ controls: { floorSelector: false, cameraToggle: false } }),
+    });
+    await flushLoad();
+    const root = container.querySelector<HTMLElement>(".indoor-builder-controls")!;
+    expect(root.style.display).toBe("none");
+
+    builder.setConfig(baseConfig({ controls: { floorSelector: true, cameraToggle: false } }));
+    expect(root.style.display).toBe("flex");
+    expect(
+      container.querySelector<HTMLElement>(".indoor-builder-camera-toggle")!.style.display,
+    ).toBe("none");
+
+    builder.destroy();
+    expect(container.querySelector(".indoor-builder-controls")).toBeNull();
+    expect(container.querySelector("canvas")).toBeNull();
+    expect(builder.isDestroyed).toBe(true);
   });
 });

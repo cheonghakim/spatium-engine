@@ -1,9 +1,4 @@
-import {
-  projectToScreen,
-  projectToWorld,
-  screenDeltaToWorldDelta,
-  type Point,
-} from "@indoor/core";
+import { projectToScreen, projectToWorld, screenDeltaToWorldDelta, type Point } from "@indoor/core";
 
 export interface RuntimeCameraState {
   center: Point;

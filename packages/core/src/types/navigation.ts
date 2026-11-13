@@ -27,6 +27,9 @@ export interface NavigationEdge {
   distance: number;
 
   accessible: boolean;
+
+  /** Traversable only from `from` to `to` (e.g. an escalator). Unset = both ways. */
+  oneWay?: boolean;
 }
 
 export interface NavigationGraph {

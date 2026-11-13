@@ -1,3 +1,4 @@
+import { copyFile } from "node:fs/promises";
 import { defineConfig } from "tsup";
 
 export default defineConfig({
@@ -30,4 +31,9 @@ export default defineConfig({
   // this is the only package that publishes their code, so it must bundle
   // them in. Only real third-party deps stay external.
   external: ["three"],
+  // Bundled third-party code (e.g. earcut, ISC) requires its notice to travel
+  // with every copy, so ship the repo-root notices file inside dist/.
+  onSuccess: async () => {
+    await copyFile("../../THIRD_PARTY_NOTICES.md", "dist/THIRD_PARTY_NOTICES.md");
+  },
 });

@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import type { Point } from "@indoor/core";
+import {
+  buildingSiteOutline,
+  buildingToSite,
+  groundFloor,
+  type Point,
+  type RouteEndpoint,
+} from "@indoor/core";
 import {
   IndoorEditor,
   PolygonTool,
   WallTool,
+  SelectTool,
+  DraftReviewTool,
   CalibrateTool,
   NavigationEdgeTool,
   NavigationTool,
 } from "@indoor/editor";
-import { render } from "../canvas/render";
+import { render, type SiteContext } from "../canvas/render";
 import { setImageLoadListener } from "../canvas/imageCache";
 
 const props = defineProps<{ editor: IndoorEditor }>();
@@ -48,14 +56,66 @@ function currentPendingWallStart(): Point | null {
   return tool instanceof WallTool ? tool.getPendingStart() : null;
 }
 
+function currentMarquee() {
+  const tool = props.editor.tools.active;
+  return tool instanceof SelectTool || tool instanceof DraftReviewTool ? tool.getMarquee() : null;
+}
+
 function currentRoutePoints(): Array<Point | null> {
   const preview = props.editor.routePreview.current;
   const floor = props.editor.getActiveFloor();
   if (!preview?.result || !floor) return [];
-  return preview.result.nodeIds.map((id) => {
+  const points = preview.result.nodeIds.map((id) => {
     const node = floor.navigation.nodes.find((n) => n.id === id);
     return node ? node.position : null;
   });
+  // A POI endpoint: draw the last stretch from the door to the POI itself.
+  const poiAt = (endpoint: RouteEndpoint): Point | null =>
+    typeof endpoint === "object" && "poiId" in endpoint
+      ? (floor.pois.find((p) => p.id === endpoint.poiId)?.position ?? null)
+      : null;
+  const startPoi = poiAt(preview.start);
+  const endPoi = poiAt(preview.end);
+  if (startPoi && points[0]) points.unshift(startPoi);
+  if (endPoi && points.at(-1)) points.push(endPoi);
+  return points;
+}
+
+/** Site view: buildings (placed), their entrances and outdoor links, in site coordinates. */
+function currentSiteContext(): SiteContext | null {
+  const editor = props.editor;
+  if (!editor.isSiteView()) return null;
+  const selectedId = editor.siteBuildingTool.getSelectedBuildingId();
+  const anchors: Point[] = [];
+  const buildings = editor.project.buildings.map((building) => {
+    const ground = groundFloor(building);
+    for (const floor of building.floors) {
+      for (const node of floor.navigation.nodes) {
+        if (node.type === "entrance") anchors.push(buildingToSite(building, node.position));
+      }
+    }
+    return {
+      id: building.id,
+      name: building.name,
+      outline: buildingSiteOutline(building),
+      spaces: (ground?.spaces ?? []).map((space) =>
+        space.polygon.map((p) => buildingToSite(building, p)),
+      ),
+      selected: building.id === selectedId,
+    };
+  });
+  // Outdoor–outdoor edges are drawn by the normal navigation layer; only
+  // edges reaching into a building need drawing here.
+  const site = editor.project.site;
+  const outdoor = new Set(site?.navigation.nodes.map((n) => n.id));
+  const links: Array<[Point, Point]> = [];
+  for (const edge of site?.navigation.edges ?? []) {
+    if (outdoor.has(edge.from) && outdoor.has(edge.to)) continue;
+    const a = editor.siteNodePosition(edge.from);
+    const b = editor.siteNodePosition(edge.to);
+    if (a && b) links.push([a, b]);
+  }
+  return { buildings, anchors, links };
 }
 
 function draw(): void {
@@ -66,6 +126,7 @@ function draw(): void {
     !draft?.floorId || draft.floorId === props.editor.getActiveFloor()?.id ? draft : null;
   render(ctx, {
     floor: props.editor.getActiveFloor(),
+    site: currentSiteContext(),
     camera: props.editor.camera,
     selection: props.editor.selection.current,
     draftPoints: currentDraftPoints(),
@@ -78,7 +139,8 @@ function draw(): void {
     draftWalls: visibleDraft?.walls ?? [],
     draftSpaces: visibleDraft?.spaces ?? [],
     draftElements: visibleDraft?.elements ?? [],
-    selectedDraftId: props.editor.draft.selectedId,
+    selectedDraftIds: props.editor.draft.selectedIds,
+    marquee: currentMarquee(),
     showGrid: showGrid.value,
   });
 }
