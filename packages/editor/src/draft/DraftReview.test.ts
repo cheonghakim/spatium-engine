@@ -4,7 +4,7 @@ import { IndoorEditor } from "../IndoorEditor.js";
 
 const pointer = (x: number, y: number, extra = {}) => ({
   worldPoint: { x, y },
-  screenPoint: { x, y },
+  screenPoint: { x: x * 50, y: y * 50 },
   button: 0,
   shiftKey: false,
   ctrlKey: false,
@@ -136,6 +136,15 @@ describe("vectorization review workflow", () => {
     editor.handlePointerMove(pointer(5, 0));
     editor.handlePointerUp(pointer(5, 0));
     expect(editor.draft.current?.walls[1]?.start).toEqual({ x: 5, y: 0 });
+    // The joined wall stretches so the corner stays closed…
+    expect(editor.draft.current?.walls[0]?.end).toEqual({ x: 5, y: 0 });
+    editor.undo();
+    // …and Alt-drag detaches the corner instead.
+    editor.draft.select(editor.draft.current!.walls[1]!.id);
+    editor.handlePointerDown(pointer(4, 0));
+    editor.handlePointerMove(pointer(5, 0, { altKey: true }));
+    editor.handlePointerUp(pointer(5, 0));
+    expect(editor.draft.current?.walls[1]?.start).toEqual({ x: 5, y: 0 });
     expect(editor.draft.current?.walls[0]?.end).toEqual({ x: 4, y: 0 });
     editor.undo();
     editor.confirmDraft();
@@ -180,16 +189,18 @@ describe("vectorization review workflow", () => {
     editor.handlePointerUp(pointer(7.35, 2.62));
     expect(editor.draft.current?.walls[1]?.end).toEqual({ x: 7, y: 3 });
   });
-  it("moves a draft endpoint, excludes stale rooms, and supports undo/redo", () => {
+  it("moves a draft endpoint, keeps the room attached and included, and supports undo/redo", () => {
     const { editor } = setup();
     editor.handlePointerDown(pointer(0, 0));
     editor.handlePointerMove(pointer(1, 0));
     editor.handlePointerUp(pointer(1, 0));
     expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 1, y: 0 });
-    expect(editor.draft.current?.spaces[0]?.accepted).toBe(false);
+    // The room's corner rode along with the wall end; the room stays in the result (= floor).
+    expect(editor.draft.current?.spaces[0]?.polygon[0]).toEqual({ x: 1, y: 0 });
+    expect(editor.draft.current?.spaces[0]?.accepted).toBe(true);
     editor.undo();
     expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 0, y: 0 });
-    expect(editor.draft.current?.spaces[0]?.accepted).toBe(true);
+    expect(editor.draft.current?.spaces[0]?.polygon[0]).toEqual({ x: 0, y: 0 });
     editor.redo();
     expect(editor.draft.current?.walls[0]?.start).toEqual({ x: 1, y: 0 });
   });

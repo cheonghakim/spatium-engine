@@ -46,7 +46,8 @@ test("upload, vectorize, edit, exclude, undo, confirm and export", async ({ page
   });
   await page.mouse.up();
   await expect(x).toHaveValue(String(oldX + 0.4));
-  await expect(review.getByRole("heading", { name: "방 (0/1)", exact: true })).toBeVisible();
+  // Moving a wall keeps the room attached and included (it is the floor).
+  await expect(review.getByRole("heading", { name: "방 (1/1)", exact: true })).toBeVisible();
   await page.keyboard.press("Control+z");
   await expect(x).toHaveValue(String(oldX));
   await expect(review.getByRole("heading", { name: "방 (1/1)", exact: true })).toBeVisible();

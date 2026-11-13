@@ -1,5 +1,6 @@
 import { distance } from "../geometry/distance.js";
 import { buildingToSite } from "../geometry/georeference.js";
+import { isPointInPolygon } from "../geometry/polygon.js";
 import type { Point } from "../types/common.js";
 import type { Connector, ConnectorSpec, ConnectorType } from "../types/connector.js";
 import type { NavigationEdge, NavigationEdgeType, NavigationNode } from "../types/navigation.js";
@@ -191,7 +192,7 @@ export function buildRoutingGraph(
   for (const building of project.buildings) {
     for (const floor of building.floors) {
       nodes.push(...floor.navigation.nodes);
-      edges.push(...floor.navigation.edges);
+      edges.push(...floorRoutingEdges(floor));
     }
     edges.push(...connectorRoutingEdges(building, options));
   }
@@ -200,6 +201,74 @@ export function buildRoutingGraph(
     edges.push(...siteRoutingEdges(project));
   }
   return { nodes, edges };
+}
+
+/** Plan footprints a walk edge can't cross without climbing: stair/escalator elements and stair rooms. */
+function climbFootprints(floor: Floor): Array<{ type: "stairs" | "escalator"; polygon: Point[] }> {
+  const footprints: Array<{ type: "stairs" | "escalator"; polygon: Point[] }> = [];
+  for (const element of floor.entrances) {
+    if (element.type !== "stairs" && element.type !== "escalator") continue;
+    // Same footprint the plan draws: `depth` along the climbing direction, `width` across it.
+    const depth = element.depth ?? 4,
+      width = element.width ?? 1.2;
+    const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+    const ux = Math.cos(angle),
+      uy = Math.sin(angle);
+    const corner = (along: number, across: number) => ({
+      x: element.position.x + ux * along - uy * across,
+      y: element.position.y + uy * along + ux * across,
+    });
+    footprints.push({
+      type: element.type,
+      polygon: [
+        corner(-depth / 2, -width / 2),
+        corner(depth / 2, -width / 2),
+        corner(depth / 2, width / 2),
+        corner(-depth / 2, width / 2),
+      ],
+    });
+  }
+  for (const space of floor.spaces)
+    if (space.type === "stairs" && space.polygon.length >= 3)
+      footprints.push({ type: "stairs", polygon: space.polygon });
+  return footprints;
+}
+
+/** Sample spacing (m) when testing whether an edge runs through a footprint. */
+const CROSSING_SAMPLE_M = 0.1;
+
+/**
+ * A floor's stored edges as routing sees them. Paths are usually drawn as
+ * plain "walk" edges even where they run over a staircase, which made the
+ * "avoid stairs" / "accessible only" options do nothing. An edge that runs
+ * through a stair (or escalator) footprint — or joins two stair nodes — is
+ * routed as that type and as not step-free. Edges already typed, or marked
+ * by hand, keep their stored values.
+ */
+export function floorRoutingEdges(floor: Floor): NavigationEdge[] {
+  const footprints = climbFootprints(floor);
+  const nodesById = new Map(floor.navigation.nodes.map((n) => [n.id, n]));
+  return floor.navigation.edges.map((edge) => {
+    if (edge.type !== "walk") return edge;
+    const a = nodesById.get(edge.from),
+      b = nodesById.get(edge.to);
+    if (!a || !b) return edge;
+    let climb: "stairs" | "escalator" | null =
+      a.type === "stairs" && b.type === "stairs" ? "stairs" : null;
+    if (!climb && footprints.length) {
+      const steps = Math.max(2, Math.ceil(distance(a.position, b.position) / CROSSING_SAMPLE_M));
+      // Interior samples only: an edge that merely ends at the stair foot isn't a climb.
+      for (let i = 1; i < steps && !climb; i++) {
+        const t = i / steps;
+        const p = {
+          x: a.position.x + (b.position.x - a.position.x) * t,
+          y: a.position.y + (b.position.y - a.position.y) * t,
+        };
+        climb = footprints.find((f) => isPointInPolygon(p, f.polygon))?.type ?? null;
+      }
+    }
+    return climb ? { ...edge, type: climb, accessible: false } : edge;
+  });
 }
 
 /**

@@ -161,9 +161,10 @@ function confirm(): void {
   <div v-if="draft" class="vectorize-panel">
     <h3>자동 감지 결과 검토</h3>
     <p class="hint">
-      주황색: 포함 · 회색: 제외 · 하늘색: 선택<br />벽을 드래그해 이동하고, 끝점이나 방 꼭짓점을
-      끌어 수정하세요. Delete로 제외할 수 있습니다.<br />Shift/Ctrl+클릭 또는 빈 곳·방 안에서
-      드래그해 여러 개를 선택하세요. (→ 완전히 포함 · ← 걸친 항목)
+      주황색: 포함 · 회색: 제외 · 파란색: 선택<br />선택한 항목을 드래그하면 한꺼번에 이동하고,
+      이어진 벽과 방 윤곽이 따라옵니다(Alt: 연결 해제). 끝점·방 꼭짓점을 끌어 모양을 고치세요.<br />Shift/Ctrl+클릭,
+      빈 곳·방 안에서 드래그(→ 완전히 포함 · ← 걸친 항목), Ctrl+A로 여러 개를 선택하고 Delete로
+      제외하세요.
     </p>
     <button class="edit-button" @click="edit">캔버스에서 수정 (B)</button>
     <div class="bulk-actions">
@@ -172,10 +173,6 @@ function confirm(): void {
     </div>
     <p v-if="wrongFloor" class="warning">
       다른 층의 초안입니다. ‘캔버스에서 수정’을 눌러 해당 층으로 이동하세요.
-    </p>
-    <p v-if="draft.roomsNeedReview" class="warning">
-      벽을 수정해 방의 자동 선택을 해제했습니다. 방 윤곽을 확인·수정한 뒤 포함할 방을 다시
-      선택하세요.
     </p>
     <div v-if="selectedCount > 1" class="coordinate-editor multi-selection">
       <strong>{{ selectedCount }}개 선택됨</strong>

@@ -21,7 +21,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "release:dry": "pnpm --filter spatium-engine publish --access public --dry-run --no-git-checks",
+    "release": "pnpm typecheck && pnpm test && pnpm --filter spatium-engine publish --access public"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

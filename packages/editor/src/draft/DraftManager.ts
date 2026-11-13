@@ -41,13 +41,14 @@ export interface DraftWallEntry {
 export interface DraftSpaceEntry {
   id: string;
   polygon: Point[];
+  /** Enclosed areas that are not floor (stair cores, shafts). Carried through to the confirmed space. */
+  holes?: Point[][];
   accepted: boolean;
   needsReview?: boolean;
 }
 
 export interface DraftState {
   floorId?: string;
-  roomsNeedReview?: boolean;
   walls: DraftWallEntry[];
   spaces: DraftSpaceEntry[];
   warnings: string[];
@@ -62,7 +63,27 @@ export interface DraftWallInput {
 
 export interface DraftSpaceInput {
   polygon: Point[];
+  holes?: Point[][];
   needsReview?: boolean;
+}
+
+/** How close (m) a point must be to a wall's centreline to count as joined to it. */
+function attachTolerance(thickness: number): number {
+  return Math.min(0.15, Math.max(0.05, thickness / 2));
+}
+
+function projectOnSegment(
+  p: Point,
+  a: Point,
+  b: Point,
+): { t: number; point: Point; distance: number } {
+  const dx = b.x - a.x,
+    dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t =
+    lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq));
+  const point = { x: a.x + dx * t, y: a.y + dy * t };
+  return { t, point, distance: Math.hypot(p.x - point.x, p.y - point.y) };
 }
 
 export class DraftManager {
@@ -170,7 +191,11 @@ export class DraftManager {
     this.beforeEdit = null;
     this.onChange();
   }
-  updateWall(id: string, start: Point, end: Point): void {
+  /**
+   * Moves/reshapes one draft wall. Walls joined to it stretch and rooms along
+   * it follow, keeping the plan closed — unless `detach` (Alt-drag) is set.
+   */
+  updateWall(id: string, start: Point, end: Point, options: { detach?: boolean } = {}): void {
     const wall = this.state?.walls.find((w) => w.id === id);
     if (!wall || !this.state || Math.hypot(end.x - start.x, end.y - start.y) < 0.01) return;
     if ([start.x, start.y, end.x, end.y].some((n) => !Number.isFinite(n))) return;
@@ -181,17 +206,103 @@ export class DraftManager {
       wall.end.y === end.y
     )
       return;
-    wall.start = { ...start };
-    wall.end = { ...end };
-    for (const element of this.state.elements) element.accepted = false;
-    // Detected room polygons are independent; do not silently accept stale rooms.
-    for (const space of this.state.spaces) space.accepted = false;
-    this.state.roomsNeedReview = this.state.spaces.length > 0;
-    this.state = {
-      ...this.state,
-      walls: this.state.walls.map((w) => (w.id === id ? { ...w } : w)),
-      spaces: [...this.state.spaces],
+    // Attachments are measured against the geometry at drag start (beforeEdit),
+    // so a wall swept across some unrelated vertex mid-drag never picks it up.
+    const base = this.beforeEdit ?? structuredClone(this.state);
+    const baseWall = base.walls.find((w) => w.id === id) ?? wall;
+    const a = baseWall.start,
+      b = baseWall.end;
+    const tolerance = attachTolerance(baseWall.thickness);
+    // A point lying on the old wall keeps its place along it (parameter t) and its offset from it.
+    const follow = (point: Point): Point | null => {
+      if (options.detach) return null;
+      const hit = projectOnSegment(point, a, b);
+      if (hit.distance > tolerance) return null;
+      return {
+        x: start.x + (end.x - start.x) * hit.t + (point.x - hit.point.x),
+        y: start.y + (end.y - start.y) * hit.t + (point.y - hit.point.y),
+      };
     };
+    const walls = this.state.walls.map((w) => {
+      if (w.id === id) return { ...w, start: { ...start }, end: { ...end } };
+      const original = base.walls.find((o) => o.id === w.id);
+      if (!original) return w;
+      // Walls joined to this one stretch so the joint stays closed.
+      const s = follow(original.start),
+        e = follow(original.end);
+      return s || e ? { ...w, start: s ?? w.start, end: e ?? w.end } : w;
+    });
+    // Rooms keep hugging the wall instead of being dropped from the result.
+    const spaces = this.state.spaces.map((space) => {
+      const original = base.spaces.find((o) => o.id === space.id);
+      if (!original || original.polygon.length !== space.polygon.length) return space;
+      let moved = false;
+      const polygon = original.polygon.map((p, i) => {
+        const next = follow(p);
+        if (next) moved = true;
+        return next ?? space.polygon[i]!;
+      });
+      return moved ? { ...space, polygon } : space;
+    });
+    // An accepted opening on this wall may no longer fit: send it back for review.
+    const elements = this.state.elements.map((element) =>
+      element.accepted &&
+      projectOnSegment(element.position, a, b).distance <= (element.width ?? 1) / 2 + tolerance
+        ? { ...element, accepted: false }
+        : element,
+    );
+    this.state = { ...this.state, walls, spaces, elements };
+    this.onChange();
+  }
+
+  /**
+   * Translates the given draft entries by (dx, dy) relative to their geometry
+   * at `beginEdit()` — the live preview of dragging a multi-selection. Walls
+   * that aren't moving but touch a moving wall stretch to stay joined, and
+   * rooms that aren't moving follow a moving wall along their shared edge.
+   */
+  moveEntries(ids: readonly string[], dx: number, dy: number): void {
+    if (!this.state || ![dx, dy].every(Number.isFinite)) return;
+    const base = this.beforeEdit ?? structuredClone(this.state);
+    const set = new Set(ids);
+    const shift = (p: Point): Point => ({ x: p.x + dx, y: p.y + dy });
+    const movedWalls = base.walls.filter((w) => set.has(w.id));
+    const attached = (p: Point) =>
+      movedWalls.some(
+        (w) => projectOnSegment(p, w.start, w.end).distance <= attachTolerance(w.thickness),
+      );
+    const walls = base.walls.map((w) =>
+      set.has(w.id)
+        ? { ...w, start: shift(w.start), end: shift(w.end) }
+        : {
+            ...w,
+            start: attached(w.start) ? shift(w.start) : w.start,
+            end: attached(w.end) ? shift(w.end) : w.end,
+          },
+    );
+    const spaces = base.spaces.map((s) => ({
+      ...s,
+      polygon: s.polygon.map((p) => (set.has(s.id) || attached(p) ? shift(p) : p)),
+      ...(s.holes && set.has(s.id) ? { holes: s.holes.map((hole) => hole.map(shift)) } : {}),
+    }));
+    const elements = base.elements.map((e) =>
+      set.has(e.id)
+        ? {
+            ...e,
+            position: shift(e.position),
+            ...(e.supportWall
+              ? {
+                  supportWall: {
+                    ...e.supportWall,
+                    start: shift(e.supportWall.start),
+                    end: shift(e.supportWall.end),
+                  },
+                }
+              : {}),
+          }
+        : e,
+    );
+    this.state = { ...this.state, walls, spaces, elements };
     this.onChange();
   }
   updateSpaceVertex(id: string, index: number, point: Point): void {
@@ -246,7 +357,10 @@ export class DraftManager {
       spaces: spaces.map((s) => ({
         ...structuredClone(s),
         id: createId(),
-        accepted: !s.needsReview,
+        // Rooms closed across a door gap are still the floor of that room —
+        // include them by default (flagged for a look) so confirming the
+        // result actually lays a floor instead of leaving bare walls.
+        accepted: true,
       })),
       warnings,
       elements: [],
@@ -351,6 +465,7 @@ export class DraftManager {
           floorId,
           s.polygon.map((p) => ({ ...p })),
         ),
+        ...(s.holes?.length ? { holes: s.holes.map((hole) => hole.map((p) => ({ ...p }))) } : {}),
         id: s.id,
       }));
     const entrances = elements.map((e) => {

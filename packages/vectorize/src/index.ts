@@ -45,3 +45,13 @@ export type {
   AffinePixelTransform,
   WorkingResolutionInput,
 } from "./analysisBudget.js";
+export { evaluateVectorization, truthFromFloor } from "./evaluate.js";
+export type {
+  EvaluationTruth,
+  EvaluationPrediction,
+  EvaluationOptions,
+  MatchCount,
+  VectorizationScore,
+} from "./evaluate.js";
+export { detectRegions, labelRegions } from "./regions.js";
+export type { RegionOptions, RegionRoom, RegionWall, RegionResult } from "./regions.js";

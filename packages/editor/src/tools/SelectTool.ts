@@ -6,7 +6,6 @@ import {
   type Entrance,
   type Floor,
   type Furniture,
-  type Group,
   type NavigationNode,
   type Point,
   type POI,
@@ -21,8 +20,6 @@ import {
   AddVertexCommand,
   DeleteVertexCommand,
 } from "../commands/VertexCommands.js";
-import { MovePOICommand } from "../commands/POICommands.js";
-import { MoveFurnitureCommand } from "../commands/FurnitureCommands.js";
 import { MoveWallCommand } from "../commands/WallCommands.js";
 import { buildDeleteSelectionCommand } from "../commands/buildDeleteCommand.js";
 import { findObjectKind, type SelectableKind } from "../selection/findObjectKind.js";
@@ -47,17 +44,6 @@ const HIT_RADIUS_PX = 12;
 interface HitResult {
   id: string;
   kind: SelectableKind;
-}
-
-interface PoiDrag {
-  poi: POI;
-  originalPosition: Point;
-}
-
-interface FurnitureDrag {
-  item: Furniture;
-  originalPosition: Point;
-  origin: Point;
 }
 
 /** Local (unrotated) footprint half-extents, falling back to the type's default preset — mirrors how width/height default elsewhere (e.g. Entrance dimension fields). */
@@ -98,9 +84,22 @@ type GroupMember =
   | { kind: "wall"; obj: Wall; originalStart: Point; originalEnd: Point }
   | { kind: "space"; obj: Space; originalPolygon: Point[]; originalHoles: Point[][] | undefined };
 
-function snapshotGroupMembers(floor: Floor, group: Group): GroupMember[] {
+/**
+ * Snapshots everything a move of `ids` carries along: groups expand to their
+ * members, and a moved wall drags the doors/windows hosted on it (wallId) so
+ * they don't end up floating beside it. Each object appears once.
+ */
+function snapshotMembers(floor: Floor, ids: readonly string[]): GroupMember[] {
+  const expanded: string[] = [];
+  for (const id of ids) {
+    const group = floor.groups.find((g) => g.id === id);
+    expanded.push(...(group ? group.memberIds : [id]));
+  }
+  const unique = new Set(expanded);
+  for (const entrance of floor.entrances)
+    if (entrance.wallId && unique.has(entrance.wallId)) unique.add(entrance.id);
   const members: GroupMember[] = [];
-  for (const id of group.memberIds) {
+  for (const id of unique) {
     const kind = findObjectKind(floor, id);
     if (kind === "poi") {
       const obj = floor.pois.find((p) => p.id === id);
@@ -175,7 +174,7 @@ function restoreGroupMembers(members: readonly GroupMember[]): void {
  * in onPointerUp), so each command's own "previous value" is captured
  * correctly at construction time.
  */
-function buildGroupMoveCommands(members: readonly GroupMember[]): Command[] {
+function buildGroupMoveCommands(floor: Floor, members: readonly GroupMember[]): Command[] {
   const commands: Command[] = [];
   for (const member of members) {
     if (member.kind === "wall") {
@@ -200,17 +199,35 @@ function buildGroupMoveCommands(members: readonly GroupMember[]): Command[] {
     } else {
       const finalPosition = { ...member.obj.position };
       member.obj.position = member.original;
-      if (distance(finalPosition, member.original) > 0.00001)
-        commands.push(new ChangePropertyCommand(member.obj, "position", finalPosition, "Move"));
+      if (distance(finalPosition, member.original) <= 0.00001) continue;
+      commands.push(new ChangePropertyCommand(member.obj, "position", finalPosition, "Move"));
+      // Furniture remembers which room it stands in; keep that in step.
+      if (member.kind === "furniture") {
+        const spaceId = floor.spaces.find((space) => isPointInSpace(space, finalPosition))?.id;
+        if (member.obj.spaceId !== spaceId)
+          commands.push(
+            new ChangePropertyCommand(member.obj, "spaceId", spaceId, "Update Furniture Space"),
+          );
+      }
     }
   }
   return commands;
 }
 
-interface GroupDrag {
-  group: Group;
+/**
+ * Moving the selection as a whole (one object, a group, or a multi-selection).
+ * Armed on press and only `active` once the pointer has travelled past the
+ * click threshold, so a plain click never nudges anything.
+ */
+interface MoveDrag {
   members: GroupMember[];
   origin: Point;
+  originScreen: Point;
+  active: boolean;
+  /** Single point-like object (POI/furniture): snap its own position, not the cursor. */
+  snapAnchor?: { point: Point; excludeId: string };
+  /** Released without dragging: select only this id (narrowing a multi-selection). */
+  narrowTo?: string;
 }
 
 /** A press on empty canvas (or on a room, which has no body-drag) that may grow into a rubber-band selection. */
@@ -223,14 +240,22 @@ interface PendingMarquee {
   additive: boolean;
   /** Selection at press time, which an additive (Shift/Ctrl) marquee extends. */
   base: readonly SelectionEntry[];
+  /**
+   * What a press that never turns into a box does on release: an unselected
+   * room is selected, a Shift/Ctrl press toggles the object under it. Done on
+   * release (not press) so a box started over a room doesn't light it up.
+   */
+  click?: { hit: HitResult; action: "select" | "toggle" };
 }
+
+/** Arrow-key nudge step in metres (Shift = coarse). */
+const NUDGE_M = 0.1;
+const NUDGE_COARSE_M = 1;
 
 export class SelectTool implements EditorTool {
   readonly id = "select";
 
-  private drag: PoiDrag | null = null;
-  private furnitureDrag: FurnitureDrag | null = null;
-  private groupDrag: GroupDrag | null = null;
+  private moveDrag: MoveDrag | null = null;
   private vertexDrag: VertexDrag | null = null;
   private marquee: PendingMarquee | null = null;
   private wallDrag: {
@@ -238,7 +263,7 @@ export class SelectTool implements EditorTool {
     start: Point;
     end: Point;
     origin: Point;
-    handle: "start" | "end" | "body";
+    handle: "start" | "end";
   } | null = null;
 
   constructor(private readonly context: ToolContext) {}
@@ -255,17 +280,32 @@ export class SelectTool implements EditorTool {
       this.wallDrag.wall.start = this.wallDrag.start;
       this.wallDrag.wall.end = this.wallDrag.end;
     }
-    if (this.drag) this.drag.poi.position = this.drag.originalPosition;
-    if (this.furnitureDrag) this.furnitureDrag.item.position = this.furnitureDrag.originalPosition;
-    if (this.groupDrag) restoreGroupMembers(this.groupDrag.members);
+    if (this.moveDrag) restoreGroupMembers(this.moveDrag.members);
     if (this.vertexDrag)
       this.vertexDrag.space.polygon[this.vertexDrag.vertexIndex] = this.vertexDrag.originalPoint;
     this.wallDrag = null;
-    this.drag = null;
-    this.furnitureDrag = null;
-    this.groupDrag = null;
+    this.moveDrag = null;
     this.vertexDrag = null;
     this.marquee = null;
+  }
+
+  /** Arms a move of every selected object, grabbed at `event`. */
+  private startMove(floor: Floor, event: EditorPointerEvent): void {
+    const ids = this.context.selection.current
+      .filter((e) => e.vertexIndex === undefined)
+      .map((e) => e.id);
+    const members = snapshotMembers(floor, ids);
+    if (members.length === 0) return;
+    const only = members.length === 1 ? members[0] : undefined;
+    this.moveDrag = {
+      members,
+      origin: { ...event.worldPoint },
+      originScreen: { ...event.screenPoint },
+      active: false,
+      ...(only && (only.kind === "poi" || only.kind === "furniture")
+        ? { snapAnchor: { point: only.original, excludeId: only.obj.id } }
+        : {}),
+    };
   }
 
   onPointerDown(event: EditorPointerEvent): void {
@@ -277,7 +317,7 @@ export class SelectTool implements EditorTool {
     // Shift or Ctrl extends the selection instead of replacing it.
     const additive = event.shiftKey || event.ctrlKey;
     const baseSelection = [...this.context.selection.current];
-    const startMarquee = (): void => {
+    const startMarquee = (click?: PendingMarquee["click"]): void => {
       this.marquee = {
         start: { ...event.worldPoint },
         end: { ...event.worldPoint },
@@ -285,6 +325,7 @@ export class SelectTool implements EditorTool {
         active: false,
         additive,
         base: baseSelection,
+        ...(click ? { click } : {}),
       };
     };
 
@@ -355,56 +396,52 @@ export class SelectTool implements EditorTool {
       return;
     }
 
+    // Shift/Ctrl: a click toggles the object, a drag adds a box to the selection.
     if (additive) {
-      this.context.selection.toggle(hit.id);
-    } else {
-      this.context.selection.select(hit.id);
+      startMarquee({ hit, action: "toggle" });
+      return;
     }
 
-    // Rooms have no body-drag, so pressing inside one and dragging draws a
-    // selection box — after vectorization rooms cover most of the canvas,
-    // so "start the box on empty space" alone would rarely be possible.
-    if (hit.kind === "space") startMarquee();
+    // Pressing on something already selected moves the whole selection —
+    // that's how a multi-selection (or a selected room) is dragged.
+    if (this.context.selection.isSelected(hit.id)) {
+      this.startMove(floor, event);
+      // A click (no drag) on one member of a multi-selection narrows to it.
+      if (this.moveDrag && baseSelection.length > 1) this.moveDrag.narrowTo = hit.id;
+      return;
+    }
 
-    if (hit.kind === "group" && !additive) {
-      const group = floor.groups.find((g) => g.id === hit.id);
-      if (group) {
-        this.groupDrag = {
-          group,
-          members: snapshotGroupMembers(floor, group),
-          origin: { ...event.worldPoint },
+    // An unselected room: click selects it, drag draws a box. After
+    // vectorization rooms cover most of the canvas, so the box has to be
+    // startable from inside one. Select the room first to move it.
+    if (hit.kind === "space") {
+      startMarquee({ hit, action: "select" });
+      return;
+    }
+
+    // Anything else: select it and arm a move, so press-and-drag moves it in one go.
+    this.context.selection.select(hit.id);
+    if (hit.kind === "wall") {
+      const wall = floor.walls.find((w) => w.id === hit.id)!;
+      const handle =
+        distance(wall.start, event.worldPoint) <= hitRadiusWorld
+          ? "start"
+          : distance(wall.end, event.worldPoint) <= hitRadiusWorld
+            ? "end"
+            : null;
+      if (handle) {
+        this.wallDrag = {
+          wall,
+          start: { ...wall.start },
+          end: { ...wall.end },
+          origin: event.worldPoint,
+          handle,
         };
+        this.context.requestRender();
+        return;
       }
     }
-    if (hit.kind === "poi") {
-      const poi = floor.pois.find((p) => p.id === hit.id);
-      if (poi && !additive) this.drag = { poi, originalPosition: { ...poi.position } };
-    }
-    if (hit.kind === "furniture") {
-      const item = floor.furniture.find((f) => f.id === hit.id);
-      if (item && !additive)
-        this.furnitureDrag = {
-          item,
-          originalPosition: { ...item.position },
-          origin: { ...event.worldPoint },
-        };
-    }
-    if (hit.kind === "wall" && !additive) {
-      const wall = floor.walls.find((w) => w.id === hit.id)!;
-      this.wallDrag = {
-        wall,
-        start: { ...wall.start },
-        end: { ...wall.end },
-        origin: event.worldPoint,
-        handle:
-          distance(wall.start, event.worldPoint) <= hitRadiusWorld
-            ? "start"
-            : distance(wall.end, event.worldPoint) <= hitRadiusWorld
-              ? "end"
-              : "body",
-      };
-    }
-
+    this.startMove(floor, event);
     this.context.requestRender();
   }
 
@@ -427,23 +464,16 @@ export class SelectTool implements EditorTool {
       const drag = this.wallDrag;
       let point = event.worldPoint;
       const floor = this.context.getActiveFloor();
-      if (floor && !event.altKey && drag.handle !== "body")
+      if (floor && !event.altKey)
         point = this.context.snapping.resolve(point, { floor, excludeId: drag.wall.id });
-      if (drag.handle === "body") {
-        const dx = point.x - drag.origin.x,
-          dy = point.y - drag.origin.y;
-        drag.wall.start = { x: drag.start.x + dx, y: drag.start.y + dy };
-        drag.wall.end = { x: drag.end.x + dx, y: drag.end.y + dy };
-      } else {
-        const anchor = drag.handle === "start" ? drag.end : drag.start;
-        if (event.shiftKey)
-          point =
-            Math.abs(point.x - anchor.x) > Math.abs(point.y - anchor.y)
-              ? { x: point.x, y: anchor.y }
-              : { x: anchor.x, y: point.y };
-        if (distance(point, anchor) < 0.01) return;
-        drag.wall[drag.handle] = { ...point };
-      }
+      const anchor = drag.handle === "start" ? drag.end : drag.start;
+      if (event.shiftKey)
+        point =
+          Math.abs(point.x - anchor.x) > Math.abs(point.y - anchor.y)
+            ? { x: point.x, y: anchor.y }
+            : { x: anchor.x, y: point.y };
+      if (distance(point, anchor) < 0.01) return;
+      drag.wall[drag.handle] = { ...point };
       this.context.requestRender();
       return;
     }
@@ -460,38 +490,63 @@ export class SelectTool implements EditorTool {
       return;
     }
 
-    if (this.groupDrag) {
-      const { members, origin } = this.groupDrag;
-      applyGroupDelta(members, event.worldPoint.x - origin.x, event.worldPoint.y - origin.y);
-      this.context.requestRender();
+    const move = this.moveDrag;
+    if (!move) return;
+    if (
+      !move.active &&
+      Math.hypot(
+        event.screenPoint.x - move.originScreen.x,
+        event.screenPoint.y - move.originScreen.y,
+      ) < MARQUEE_THRESHOLD_PX
+    )
       return;
+    move.active = true;
+    let dx = event.worldPoint.x - move.origin.x,
+      dy = event.worldPoint.y - move.origin.y;
+    // Shift locks the move to the dominant axis.
+    if (event.shiftKey) {
+      if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+      else dx = 0;
     }
-
-    if (this.furnitureDrag) {
-      const { originalPosition, origin } = this.furnitureDrag;
-      const target = {
-        x: originalPosition.x + event.worldPoint.x - origin.x,
-        y: originalPosition.y + event.worldPoint.y - origin.y,
-      };
-      const floor = this.context.getActiveFloor();
-      const point = floor
-        ? this.context.snapping.resolve(target, {
-            floor,
-            excludeId: this.furnitureDrag.item.id,
-          })
-        : target;
-      this.furnitureDrag.item.position = point;
-      this.context.requestRender();
-      return;
-    }
-
-    if (!this.drag) return;
     const floor = this.context.getActiveFloor();
-    const point = floor
-      ? this.context.snapping.resolve(event.worldPoint, { floor, excludeId: this.drag.poi.id })
-      : event.worldPoint;
-    this.drag.poi.position = point;
+    if (move.snapAnchor && floor && !event.altKey) {
+      const anchor = move.snapAnchor.point;
+      const snapped = this.context.snapping.resolve(
+        { x: anchor.x + dx, y: anchor.y + dy },
+        { floor, excludeId: move.snapAnchor.excludeId },
+      );
+      dx = snapped.x - anchor.x;
+      dy = snapped.y - anchor.y;
+    }
+    applyGroupDelta(move.members, dx, dy);
     this.context.requestRender();
+  }
+
+  /** Arrow keys nudge the whole selection (Shift = 1 m steps), one undo step per press. */
+  private nudge(event: EditorKeyboardEvent): boolean {
+    const step = event.shiftKey ? NUDGE_COARSE_M : NUDGE_M;
+    const delta =
+      event.key === "ArrowLeft"
+        ? { x: -step, y: 0 }
+        : event.key === "ArrowRight"
+          ? { x: step, y: 0 }
+          : event.key === "ArrowUp"
+            ? { x: 0, y: -step }
+            : event.key === "ArrowDown"
+              ? { x: 0, y: step }
+              : null;
+    if (!delta) return false;
+    const floor = this.context.getActiveFloor();
+    if (!floor) return true;
+    const ids = this.context.selection.current
+      .filter((e) => e.vertexIndex === undefined)
+      .map((e) => e.id);
+    const members = snapshotMembers(floor, ids);
+    if (members.length === 0) return true;
+    applyGroupDelta(members, delta.x, delta.y);
+    const commands = buildGroupMoveCommands(floor, members);
+    if (commands.length) this.context.executeCommand(new CompoundCommand("Move", commands));
+    return true;
   }
 
   onPointerUp(): void {
@@ -499,6 +554,13 @@ export class SelectTool implements EditorTool {
       const marquee = this.marquee;
       this.marquee = null;
       if (marquee.active) this.applyMarquee(marquee);
+      else if (marquee.click?.action === "toggle") {
+        this.context.selection.toggle(marquee.click.hit.id);
+        this.context.requestRender();
+      } else if (marquee.click?.action === "select") {
+        this.context.selection.select(marquee.click.hit.id);
+        this.context.requestRender();
+      }
       return;
     }
     if (this.wallDrag) {
@@ -521,46 +583,42 @@ export class SelectTool implements EditorTool {
       return;
     }
 
-    if (this.groupDrag) {
-      const commands = buildGroupMoveCommands(this.groupDrag.members);
-      this.groupDrag = null;
-      if (commands.length) this.context.executeCommand(new CompoundCommand("Move Group", commands));
+    const move = this.moveDrag;
+    if (!move) return;
+    this.moveDrag = null;
+    if (!move.active) {
+      if (move.narrowTo) this.context.selection.select(move.narrowTo);
       return;
     }
-
-    if (this.furnitureDrag) {
-      const { item, originalPosition } = this.furnitureDrag;
-      const finalPosition = { ...item.position };
-      item.position = originalPosition;
-      if (distance(originalPosition, finalPosition) > 0) {
-        const commands: Command[] = [new MoveFurnitureCommand(item, finalPosition)];
-        const spaceId = this.context
-          .getActiveFloor()
-          ?.spaces.find((space) => isPointInSpace(space, finalPosition))?.id;
-        if (item.spaceId !== spaceId)
-          commands.push(
-            new ChangePropertyCommand(item, "spaceId", spaceId, "Update Furniture Space"),
-          );
-        this.context.executeCommand(new CompoundCommand("Move Furniture", commands));
-      }
-      this.furnitureDrag = null;
-      return;
-    }
-
-    if (!this.drag) return;
-    const { poi, originalPosition } = this.drag;
-    const finalPosition = { ...poi.position };
-    poi.position = originalPosition;
-    this.context.executeCommand(new MovePOICommand(poi, finalPosition));
-    this.drag = null;
+    const floor = this.context.getActiveFloor();
+    if (!floor) return;
+    const commands = buildGroupMoveCommands(floor, move.members);
+    if (commands.length) this.context.executeCommand(new CompoundCommand("Move", commands));
   }
 
   onKeyDown(event: EditorKeyboardEvent): void {
     if (event.key === "Escape") {
+      // First Escape cancels a drag/box in progress; the next clears the selection.
+      const busy = !!(this.moveDrag || this.wallDrag || this.vertexDrag || this.marquee);
       this.deactivate();
+      if (!busy) this.context.selection.clear();
       this.context.requestRender();
       return;
     }
+    if (event.ctrlKey && event.key.toLowerCase() === "a") {
+      const floor = this.context.getActiveFloor();
+      if (floor) {
+        const ids = idsInMarquee(
+          floor,
+          { minX: -Infinity, minY: -Infinity, maxX: Infinity, maxY: Infinity },
+          "window",
+        ).map((id) => findGroupContaining(floor, id)?.id ?? id);
+        this.context.selection.setAll(ids.map((id) => ({ id })));
+        this.context.requestRender();
+      }
+      return;
+    }
+    if (!this.moveDrag && !this.wallDrag && !this.vertexDrag && this.nudge(event)) return;
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     this.deactivate();
 

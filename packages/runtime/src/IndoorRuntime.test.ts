@@ -241,6 +241,8 @@ describe("IndoorRuntime", () => {
           { x: 0, y: 0 },
           { x: 0, y: 8 },
         ],
+        // Reached by the elevator: 30 s wait + 10 s boarding + 6 m at 1.5 m/s, going up.
+        arrival: { via: "elevator", seconds: 44, direction: "up" },
       },
     ]);
   });

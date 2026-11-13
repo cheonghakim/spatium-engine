@@ -131,8 +131,7 @@ function seek(event: Event): void {
 watch(curve, (shape) => runtime?.setRouteShape(shape));
 watch(speed, (value) => runtime?.setRouteAnimationSpeed(value));
 
-const playbackFloorName = computed(() => {
-  const floorId = playback.value?.floorId;
+function floorName(floorId: string | undefined): string {
   if (!floorId) return "";
   revision.value;
   for (const building of props.editor.getPreviewProject().buildings) {
@@ -140,6 +139,27 @@ const playbackFloorName = computed(() => {
     if (floor) return floor.name;
   }
   return "";
+}
+
+const VIA_LABEL: Record<string, string> = {
+  elevator: "엘리베이터",
+  stairs: "계단",
+  escalator: "에스컬레이터",
+  ramp: "경사로",
+  walk: "통로",
+};
+
+/** "엘리베이터로 3F 이동 중 ↑" while playback is changing floors. */
+const transitionLabel = computed(() => {
+  const transition = playback.value?.transition;
+  if (!transition) return "";
+  const to = floorName(transition.toFloorId) || "다른 층";
+  const arrow = transition.direction === "down" ? "↓" : "↑";
+  return `${VIA_LABEL[transition.via] ?? "이동"}로 ${to} 이동 중 ${arrow}`;
+});
+
+const playbackFloorName = computed(() => {
+  return floorName(playback.value?.floorId);
 });
 
 function formatSeconds(seconds: number): string {
@@ -277,6 +297,9 @@ onBeforeUnmount(() => {
         >경로 탭에서 경로를 먼저 계산하세요</span
       >
     </div>
+    <div v-if="transitionLabel" class="floor-transition" role="status">
+      {{ transitionLabel }}
+    </div>
     <div v-if="playback" class="playback-bar" role="group" aria-label="경로 재생">
       <button
         class="icon"
@@ -314,6 +337,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.floor-transition {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: rgba(17, 20, 26, 0.82);
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 2;
+}
 .preview-3d-wrapper {
   position: relative;
   width: 100%;

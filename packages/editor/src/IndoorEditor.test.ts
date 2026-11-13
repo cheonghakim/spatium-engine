@@ -19,7 +19,7 @@ import type { EditorPointerEvent } from "./tools/EditorTool.js";
 
 function click(point: Point): EditorPointerEvent {
   return {
-    screenPoint: point,
+    screenPoint: { x: point.x * 50, y: point.y * 50 },
     worldPoint: point,
     button: 0,
     shiftKey: false,
@@ -118,6 +118,7 @@ describe("IndoorEditor", () => {
     editor.setTool("select");
     editor.selection.clear();
     editor.handlePointerDown(click({ x: 2, y: 2 }));
+    editor.handlePointerUp(click({ x: 2, y: 2 }));
 
     expect(editor.selection.current).toEqual([{ id: floor.spaces[0]?.id }]);
   });

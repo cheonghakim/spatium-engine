@@ -173,7 +173,8 @@ function toPointerEvent(evt: PointerEvent) {
     worldPoint: props.editor.camera.screenToWorld(screenPoint),
     button: evt.button,
     shiftKey: evt.shiftKey,
-    ctrlKey: evt.ctrlKey,
+    // ⌘ on macOS does what Ctrl does elsewhere (toggle-select).
+    ctrlKey: evt.ctrlKey || evt.metaKey,
     altKey: evt.altKey,
   };
 }
@@ -219,7 +220,16 @@ function onPointerCancel(): void {
   draw();
 }
 
-const HANDLED_KEYS = new Set(["Enter", "Escape", "Backspace", "Delete"]);
+const HANDLED_KEYS = new Set([
+  "Enter",
+  "Escape",
+  "Backspace",
+  "Delete",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+]);
 
 function onKeyDown(evt: KeyboardEvent): void {
   if (evt.code === "Space") {
@@ -227,11 +237,13 @@ function onKeyDown(evt: KeyboardEvent): void {
     evt.preventDefault();
     return;
   }
-  if (HANDLED_KEYS.has(evt.key)) evt.preventDefault();
+  const ctrlKey = evt.ctrlKey || evt.metaKey;
+  // Ctrl/⌘+A selects everything on the canvas, not the page's text.
+  if (HANDLED_KEYS.has(evt.key) || (ctrlKey && evt.key.toLowerCase() === "a")) evt.preventDefault();
   props.editor.handleKeyDown({
     key: evt.key,
     shiftKey: evt.shiftKey,
-    ctrlKey: evt.ctrlKey,
+    ctrlKey,
     altKey: evt.altKey,
   });
 }

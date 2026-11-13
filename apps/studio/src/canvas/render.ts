@@ -196,7 +196,9 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
 
     if (state.layerVisibility.pois) {
       for (const poi of state.floor.pois) {
-        drawDot(ctx, state.camera, poi.position, COLORS.poi);
+        const selected = state.selection.some((s) => s.id === poi.id);
+        if (selected) drawSelectionRing(ctx, state.camera, poi.position, 10);
+        drawDot(ctx, state.camera, poi.position, selected ? COLORS.wallSelected : COLORS.poi);
       }
     }
 
@@ -219,16 +221,26 @@ export function render(ctx: CanvasRenderingContext2D, state: RenderState): void 
         const from = nodesById.get(edge.from);
         const to = nodesById.get(edge.to);
         if (from && to) {
-          drawLine(ctx, state.camera, from.position, to.position, COLORS.navigationEdge, 2);
+          const selected = state.selection.some((s) => s.id === edge.id);
+          drawLine(
+            ctx,
+            state.camera,
+            from.position,
+            to.position,
+            selected ? COLORS.wallSelected : COLORS.navigationEdge,
+            selected ? 4 : 2,
+          );
         }
       }
       for (const node of state.floor.navigation.nodes) {
         const pending = node.id === state.pendingEdgeNodeId;
+        const selected = state.selection.some((s) => s.id === node.id);
+        if (selected) drawSelectionRing(ctx, state.camera, node.position, 9);
         drawDot(
           ctx,
           state.camera,
           node.position,
-          pending ? COLORS.navigationNodePending : COLORS.navigationNode,
+          pending || selected ? COLORS.navigationNodePending : COLORS.navigationNode,
           pending ? 7 : 5,
         );
       }
@@ -325,17 +337,34 @@ function drawMarquee(ctx: CanvasRenderingContext2D, camera: EditorCamera, marque
   const a = camera.worldToScreen(marquee.start);
   const b = camera.worldToScreen(marquee.end);
   const crossing = marquee.end.x < marquee.start.x;
+  const color = crossing ? "#6ec88c" : COLORS.draftSelected;
   ctx.save();
-  if (crossing) ctx.setLineDash([5, 4]);
-  ctx.fillStyle = crossing ? "rgba(110, 200, 140, 0.10)" : "rgba(110, 140, 255, 0.10)";
-  ctx.strokeStyle = crossing ? "#6ec88c" : COLORS.draftSelected;
-  ctx.lineWidth = 1;
   const x = Math.min(a.x, b.x),
     y = Math.min(a.y, b.y),
     w = Math.abs(b.x - a.x),
     h = Math.abs(b.y - a.y);
+  ctx.fillStyle = crossing ? "rgba(110, 200, 140, 0.18)" : "rgba(110, 140, 255, 0.18)";
   ctx.fillRect(x, y, w, h);
-  ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+  // Dark under-stroke keeps the box legible over the plan image and selected (blue) geometry.
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+  ctx.strokeRect(x, y, w, h);
+  if (crossing) ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = color;
+  ctx.strokeRect(x, y, w, h);
+  // Mode chip, so the left→right / right→left rule doesn't have to be memorised.
+  if (w > 40 && h > 20) {
+    const label = crossing ? "걸친 항목" : "완전히 포함";
+    ctx.setLineDash([]);
+    ctx.font = "600 11px system-ui, sans-serif";
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y - 18, tw + 10, 16);
+    ctx.fillStyle = "#11141a";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + 5, y - 10);
+  }
   ctx.restore();
 }
 
@@ -756,6 +785,25 @@ function drawVertexHandle(
   ctx.lineWidth = 1;
   ctx.fillRect(screen.x - size / 2, screen.y - size / 2, size, size);
   ctx.strokeRect(screen.x - size / 2, screen.y - size / 2, size, size);
+}
+
+/** Halo around a selected point object (POI, path point), so it reads as selected at any zoom. */
+function drawSelectionRing(
+  ctx: CanvasRenderingContext2D,
+  camera: EditorCamera,
+  worldPoint: Point,
+  radius: number,
+): void {
+  const screen = camera.worldToScreen(worldPoint);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(110, 140, 255, 0.22)";
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = COLORS.wallSelected;
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawDot(

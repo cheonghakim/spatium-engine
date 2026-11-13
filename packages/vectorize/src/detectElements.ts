@@ -32,6 +32,11 @@ export interface DetectElementsOptions {
   maxTreadThicknessM?: number;
   /** Minimum number of regularly spaced treads required to report a staircase candidate. */
   minTreadCount?: number;
+  /**
+   * Size of one source pixel (m). On a coarse raster a tread line lands a pixel
+   * off in length, position and spacing; the stair tolerances widen to allow it.
+   */
+  resolutionM?: number;
 }
 
 const DETECT_ELEMENTS_DEFAULTS: Required<DetectElementsOptions> = {
@@ -44,6 +49,7 @@ const DETECT_ELEMENTS_DEFAULTS: Required<DetectElementsOptions> = {
   maxTreadWidthM: 3,
   maxTreadThicknessM: 0.12,
   minTreadCount: 5,
+  resolutionM: 0,
 };
 
 // Perpendicular tolerance for the opening-pairing collinearity test below
@@ -317,10 +323,12 @@ export function detectElements(
         (m) =>
           !used.has(m.index) &&
           m.wall.thickness <= opts.maxTreadThicknessM &&
-          Math.abs(m.len - width) < 0.12 &&
-          Math.abs(m.along) < 0.08 &&
+          // On a coarse raster treads also come out uneven where a rail or wall line joins them.
+          Math.abs(m.len - width) <
+            Math.max(0.12, 2.5 * opts.resolutionM, opts.resolutionM ? 0.2 * width : 0) &&
+          Math.abs(m.along) < Math.max(0.08, 2 * opts.resolutionM) &&
           Math.abs((m.wall.end.x - m.wall.start.x) * uy - (m.wall.end.y - m.wall.start.y) * ux) <
-            0.04,
+            Math.max(0.04, opts.resolutionM),
       )
       .sort((a, b) => a.offset - b.offset);
     const seed = matches.findIndex((m) => m.index === i);
@@ -336,7 +344,12 @@ export function detectElements(
     if (run.length < opts.minTreadCount) continue;
     const spacing = (run[run.length - 1]!.offset - run[0]!.offset) / (run.length - 1);
     if (
-      run.some((m, k) => k > 0 && Math.abs(m.offset - run[k - 1]!.offset - spacing) > spacing * 0.2)
+      run.some(
+        (m, k) =>
+          k > 0 &&
+          Math.abs(m.offset - run[k - 1]!.offset - spacing) >
+            Math.max(spacing * 0.2, 1.2 * opts.resolutionM),
+      )
     )
       continue;
     const middle = (run[0]!.offset + run[run.length - 1]!.offset) / 2;

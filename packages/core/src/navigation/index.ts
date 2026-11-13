@@ -18,6 +18,7 @@ export type { RouteEndpoint } from "./endpoints.js";
 export {
   buildRoutingGraph,
   connectorRoutingEdges,
+  floorRoutingEdges,
   siteRoutingEdges,
   resolveConnectorTiming,
   DEFAULT_CONNECTOR_TIMING,

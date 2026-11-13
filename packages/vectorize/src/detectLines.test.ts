@@ -1,19 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { detectHorizontalSegments, detectVerticalSegments, mergeParallelSegments } from "./detectLines.js";
+import {
+  detectHorizontalSegments,
+  detectVerticalSegments,
+  mergeParallelSegments,
+} from "./detectLines.js";
 import { gridToBinary } from "./testUtils.js";
 
 // A simple rectangular room outline, 10 wide x 4 tall.
 const RECTANGLE = gridToBinary(["##########", "#........#", "#........#", "##########"]);
 
 describe("detectHorizontalSegments / detectVerticalSegments", () => {
-  it('bridges scan damage without closing a larger door opening', () => {
-    const image = gridToBinary(['##########..##########......##########']);
-    expect(detectHorizontalSegments(image, 8, 2).map(s => [s.start,s.end])).toEqual([[0,21],[28,37]]);
+  it("bridges scan damage without closing a larger door opening", () => {
+    const image = gridToBinary(["##########..##########......##########"]);
+    expect(detectHorizontalSegments(image, 8, 2).map((s) => [s.start, s.end])).toEqual([
+      [0, 21],
+      [28, 37],
+    ]);
     expect(detectHorizontalSegments(image, 8, 0)).toHaveLength(3);
   });
 
-  it('does not extend a line into trailing whitespace', () => {
-    expect(detectHorizontalSegments(gridToBinary(['##########..']), 8, 3)[0]?.end).toBe(9);
+  it("does not extend a line into trailing whitespace", () => {
+    expect(detectHorizontalSegments(gridToBinary(["##########.."]), 8, 3)[0]?.end).toBe(9);
   });
   it("finds the top and bottom edges as horizontal runs", () => {
     const segments = detectHorizontalSegments(RECTANGLE, 3);
@@ -38,19 +45,48 @@ describe("detectHorizontalSegments / detectVerticalSegments", () => {
 });
 
 describe("mergeParallelSegments", () => {
-  it('merges two thick walls interleaved on the same rows independently', () => {
-    const image = gridToBinary(['##########.....##########','##########.....##########','##########.....##########']);
-    const result = mergeParallelSegments(detectHorizontalSegments(image, 5), 2, 'horizontal');
+  it("merges two thick walls interleaved on the same rows independently", () => {
+    const image = gridToBinary([
+      "##########.....##########",
+      "##########.....##########",
+      "##########.....##########",
+    ]);
+    const result = mergeParallelSegments(detectHorizontalSegments(image, 5), 2, "horizontal");
     expect(result).toHaveLength(2);
-    expect(result.map(s => s.thicknessPx)).toEqual([3,3]);
-    expect(result.map(s => [s.start,s.end])).toEqual([[0,9],[15,24]]);
+    expect(result.map((s) => s.thicknessPx)).toEqual([3, 3]);
+    expect(result.map((s) => [s.start, s.end])).toEqual([
+      [0, 9],
+      [15, 24],
+    ]);
   });
 
-  it('does not fuse unrelated strokes with only a tiny overlap', () => {
-    expect(mergeParallelSegments([
-      {orientation:'horizontal',offset:0,start:0,end:100},
-      {orientation:'horizontal',offset:1,start:99,end:200},
-    ], 2, 'horizontal')).toHaveLength(2);
+  it("keeps a door gap open when one stray row (a door leaf touching the wall) spans it", () => {
+    const rows = Array.from({ length: 6 }, () => "##########.....##########");
+    rows.push("#########################"); // the leaf, drawn on the wall's last row
+    const result = mergeParallelSegments(
+      detectHorizontalSegments(gridToBinary(rows), 5),
+      2,
+      "horizontal",
+    );
+    expect(result.map((s) => [s.start, s.end])).toEqual([
+      [0, 9],
+      [15, 24],
+    ]);
+    // Both halves stay on the same centre line, so the gap can be paired as a door.
+    expect(result[0]!.offset).toBe(result[1]!.offset);
+  });
+
+  it("does not fuse unrelated strokes with only a tiny overlap", () => {
+    expect(
+      mergeParallelSegments(
+        [
+          { orientation: "horizontal", offset: 0, start: 0, end: 100 },
+          { orientation: "horizontal", offset: 1, start: 99, end: 200 },
+        ],
+        2,
+        "horizontal",
+      ),
+    ).toHaveLength(2);
   });
   it("merges adjacent parallel runs into one thicker centerline", () => {
     const segments = [

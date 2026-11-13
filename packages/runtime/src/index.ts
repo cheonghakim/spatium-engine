@@ -27,6 +27,8 @@ export type {
   RoutePlaybackOptions,
   RoutePlaybackState,
   RouteLeg,
+  RouteLegArrival,
+  RoutePlaybackTransition,
   RouteCurveShape,
   RouteAnimationType,
   RouteCameraMode,
