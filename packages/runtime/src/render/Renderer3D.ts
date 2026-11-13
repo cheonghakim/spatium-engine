@@ -80,35 +80,89 @@ export interface RouteLeg {
    * omitted, the active floor's walls and holes are used if the leg is on it.
    */
   obstacles?: RouteObstacles;
+  /**
+   * How this leg is reached from the previous one when they're on different
+   * floors (an elevator ride, a flight of stairs…). Playback then shows a
+   * short floor-change transition between the two legs.
+   */
+  arrival?: RouteLegArrival;
+}
+
+/** The vertical move into a leg on another floor. */
+export interface RouteLegArrival {
+  /** What carries you there — shown to the viewer ("엘리베이터로 이동 중"). */
+  via: "elevator" | "stairs" | "escalator" | "ramp" | "walk";
+  /** Real travel time (wait + ride / climb). Only scales the transition; playback compresses it. */
+  seconds?: number;
+  direction?: "up" | "down";
 }
 
 export interface RoutePlaybackState {
   paused: boolean;
-  /** 0–1 along the whole route, across floors. */
+  /** 0–1 along the whole route, across floors (including floor-change transitions). */
   progress: number;
-  /** Meters travelled / total, along the drawn shape. */
+  /** Meters walked / total, along the drawn shape (floor changes add no distance). */
   distance: number;
   totalDistance: number;
   speed: number;
   /** Seconds left at the current speed. */
   remainingSeconds: number;
+  /** Index of the floor leg being shown, and how many floor legs there are. */
   legIndex: number;
   legCount: number;
+  /** The floor currently shown. */
   floorId?: string;
+  /** Set while playback is moving between floors. */
+  transition?: RoutePlaybackTransition;
 }
 
-interface PlaybackLeg {
-  floorId?: string;
-  path: RoutePath;
-  start: number;
+export interface RoutePlaybackTransition extends RouteLegArrival {
+  fromFloorId?: string;
+  toFloorId?: string;
+  /** 0–1 through the transition; the floor switches at 0.5. */
+  progress: number;
 }
+
+/** A floor leg, or the floor-change transition between two of them, on the playback timeline. */
+type PlaybackLeg =
+  | {
+      kind: "walk";
+      floorId?: string;
+      path: RoutePath;
+      /** Timeline position where the leg starts, and its length (timeline units = metres). */
+      start: number;
+      length: number;
+      /** Metres walked before this leg (transitions add none). */
+      walkedBefore: number;
+      /** Index among the walk legs. */
+      walkIndex: number;
+    }
+  | {
+      kind: "transition";
+      fromFloorId?: string;
+      floorId?: string;
+      from: Point;
+      to: Point;
+      arrival: RouteLegArrival;
+      start: number;
+      length: number;
+      walkedBefore: number;
+      /** Walk index of the leg before (first half) / after (second half). */
+      walkIndex: number;
+    };
 
 interface ActiveRoutePlayback {
   rawLegs: RouteLeg[];
   legs: PlaybackLeg[];
+  /** Timeline length (walked metres + transition lengths). */
   total: number;
+  walkedTotal: number;
+  walkLegCount: number;
+  /** Position on the timeline. */
   distance: number;
   legIndex: number;
+  /** Floor + walk index last reported through onRouteLegChange. */
+  shownKey: string | null;
   durationSeconds: number | undefined;
   speed: number;
   paused: boolean;
@@ -159,6 +213,18 @@ const ROUTE_TRAVELED_HEIGHT_METERS = 0.05;
 const ROUTE_TRAVELED_COLOR = 0x9aa0a8;
 /** Segment length the travelled overlay is split into, so it tracks the marker closely. */
 const ROUTE_TRAVELED_STEP_METERS = 0.2;
+/**
+ * Floor changes are compressed: a 40 s elevator ride shouldn't stall playback
+ * for 40 s. Shown for seconds ÷ this, clamped to the range below (at speed 1).
+ */
+const TRANSITION_TIME_COMPRESSION = 8;
+const TRANSITION_MIN_SECONDS = 1.5;
+const TRANSITION_MAX_SECONDS = 4;
+const TRANSITION_DEFAULT_SECONDS = 2.5;
+/** How far (m) the marker/camera rise or sink out of a floor before it switches. */
+const TRANSITION_RISE_METERS = 3;
+/** How dark the view gets at the moment the floor switches (0 = none, 1 = black). */
+const TRANSITION_FADE = 0.75;
 
 /**
  * Three.js scene derived from Core data on update() — meshes are never the
@@ -338,6 +404,7 @@ export class Renderer3D {
       ...(leg.floorId !== undefined ? { floorId: leg.floorId } : {}),
       points: [...leg.points],
       ...(leg.obstacles ? { obstacles: leg.obstacles } : {}),
+      ...(leg.arrival ? { arrival: { ...leg.arrival } } : {}),
     }));
     const built = this.buildPlaybackLegs(rawLegs);
     if (!built) return;
@@ -362,8 +429,11 @@ export class Renderer3D {
       rawLegs,
       legs: built.legs,
       total: built.total,
+      walkedTotal: built.walkedTotal,
+      walkLegCount: built.walkLegCount,
       distance: 0,
       legIndex: -1,
+      shownKey: null,
       durationSeconds:
         options.durationSeconds !== undefined && options.durationSeconds > 0
           ? options.durationSeconds
@@ -402,6 +472,7 @@ export class Renderer3D {
     if (!playback) return;
     this.routePlayback = null;
     disposeGroup(this.playbackGroup);
+    this.renderer.domElement.style.opacity = "";
     if (playback.cameraMode !== "overview") {
       this.camera.position.copy(playback.priorCamera.position);
       this.controls.target.copy(playback.priorCamera.target);
@@ -456,18 +527,30 @@ export class Renderer3D {
     const playback = this.routePlayback;
     if (!playback) return null;
     const metersPerSecond = this.baseSpeed(playback) * playback.speed;
-    const leg = playback.legs[playback.legIndex];
+    const leg = playback.legs[Math.max(0, playback.legIndex)] as PlaybackLeg;
+    const local = Math.max(0, Math.min(leg.length, playback.distance - leg.start));
+    const view = this.playbackView(leg, local);
     return {
       paused: playback.paused,
       progress: playback.total > 0 ? playback.distance / playback.total : 1,
-      distance: playback.distance,
-      totalDistance: playback.total,
+      distance: leg.walkedBefore + (leg.kind === "walk" ? local : 0),
+      totalDistance: playback.walkedTotal,
       speed: playback.speed,
       remainingSeconds:
         metersPerSecond > 0 ? (playback.total - playback.distance) / metersPerSecond : 0,
-      legIndex: Math.max(0, playback.legIndex),
-      legCount: playback.legs.length,
-      ...(leg?.floorId !== undefined ? { floorId: leg.floorId } : {}),
+      legIndex: view.walkIndex,
+      legCount: playback.walkLegCount,
+      ...(view.floorId !== undefined ? { floorId: view.floorId } : {}),
+      ...(leg.kind === "transition"
+        ? {
+            transition: {
+              ...leg.arrival,
+              ...(leg.fromFloorId !== undefined ? { fromFloorId: leg.fromFloorId } : {}),
+              ...(leg.floorId !== undefined ? { toFloorId: leg.floorId } : {}),
+              progress: leg.length > 0 ? local / leg.length : 1,
+            },
+          }
+        : {}),
     };
   }
 
@@ -492,6 +575,8 @@ export class Renderer3D {
     const progress = playback.total > 0 ? playback.distance / playback.total : 0;
     playback.legs = built.legs;
     playback.total = built.total;
+    playback.walkedTotal = built.walkedTotal;
+    playback.walkLegCount = built.walkLegCount;
     playback.distance = progress * built.total;
     playback.legIndex = -1;
     this.positionPlayback(0, true);
@@ -501,11 +586,16 @@ export class Renderer3D {
     return this.routeShape;
   }
 
-  private buildPlaybackLegs(
-    legs: ReadonlyArray<RouteLeg>,
-  ): { legs: PlaybackLeg[]; total: number } | null {
+  private buildPlaybackLegs(legs: ReadonlyArray<RouteLeg>): {
+    legs: PlaybackLeg[];
+    total: number;
+    walkedTotal: number;
+    walkLegCount: number;
+  } | null {
     const built: PlaybackLeg[] = [];
-    let total = 0;
+    let total = 0,
+      walked = 0,
+      walkIndex = 0;
     for (const leg of legs) {
       const activeFloor = this.lastState?.floor;
       const obstacles =
@@ -515,14 +605,46 @@ export class Renderer3D {
           : undefined);
       const path = buildRoutePath(leg.points, this.routeShape, undefined, obstacles);
       if (!path) continue;
+      const previous = built.at(-1);
+      // Reaching this leg means changing floors: put a transition in between.
+      if (leg.arrival && previous?.kind === "walk" && previous.floorId !== leg.floorId) {
+        const seconds =
+          leg.arrival.seconds !== undefined && Number.isFinite(leg.arrival.seconds)
+            ? Math.min(
+                TRANSITION_MAX_SECONDS,
+                Math.max(TRANSITION_MIN_SECONDS, leg.arrival.seconds / TRANSITION_TIME_COMPRESSION),
+              )
+            : TRANSITION_DEFAULT_SECONDS;
+        const length = seconds * WALK_SPEED_METERS_PER_SECOND;
+        built.push({
+          kind: "transition",
+          ...(previous.floorId !== undefined ? { fromFloorId: previous.floorId } : {}),
+          ...(leg.floorId !== undefined ? { floorId: leg.floorId } : {}),
+          from: sampleRoutePath(previous.path, previous.path.length).point,
+          to: sampleRoutePath(path, 0).point,
+          arrival: { ...leg.arrival },
+          start: total,
+          length,
+          walkedBefore: walked,
+          walkIndex: walkIndex - 1,
+        });
+        total += length;
+      }
       built.push({
+        kind: "walk",
         ...(leg.floorId !== undefined ? { floorId: leg.floorId } : {}),
         path,
         start: total,
+        length: path.length,
+        walkedBefore: walked,
+        walkIndex: walkIndex++,
       });
       total += path.length;
+      walked += path.length;
     }
-    return built.length > 0 ? { legs: built, total } : null;
+    return built.length > 0
+      ? { legs: built, total, walkedTotal: walked, walkLegCount: walkIndex }
+      : null;
   }
 
   /** Meters per second at speed 1: walking pace, slowed so a short route still lasts a moment. */
@@ -558,12 +680,59 @@ export class Renderer3D {
     return index;
   }
 
-  /** Enters leg `index`: rebuilds the travelled overlay and asks the host to show its floor. */
+  /**
+   * Where playback stands at `local` metres into `leg`: the plan point, how
+   * far above/below the floor (floor-change transitions rise out of one floor
+   * and into the next), which floor is shown, and the fade to apply.
+   */
+  private playbackView(
+    leg: PlaybackLeg,
+    local: number,
+  ): {
+    point: Point;
+    direction: Point | null;
+    lift: number;
+    floorId: string | undefined;
+    walkIndex: number;
+    fade: number;
+  } {
+    if (leg.kind === "walk") {
+      const here = sampleRoutePath(leg.path, local);
+      return {
+        point: here.point,
+        direction: here.direction,
+        lift: 0,
+        floorId: leg.floorId,
+        walkIndex: leg.walkIndex,
+        fade: 0,
+      };
+    }
+    const t = leg.length > 0 ? Math.max(0, Math.min(1, local / leg.length)) : 1;
+    const sign = leg.arrival.direction === "down" ? -1 : 1;
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const firstHalf = t < 0.5;
+    // Leave the old floor (rise/sink away), then arrive from the other side.
+    const lift = firstHalf
+      ? sign * TRANSITION_RISE_METERS * ease(t * 2)
+      : -sign * TRANSITION_RISE_METERS * (1 - ease((t - 0.5) * 2));
+    return {
+      point: firstHalf ? leg.from : leg.to,
+      direction: null,
+      lift,
+      floorId: firstHalf ? leg.fromFloorId : leg.floorId,
+      walkIndex: firstHalf ? leg.walkIndex : leg.walkIndex + 1,
+      // Darkest at the switch, so the floor swap happens out of sight.
+      fade: TRANSITION_FADE * Math.max(0, 1 - Math.abs(t - 0.5) * 4),
+    };
+  }
+
+  /** Enters leg `index`: rebuilds the travelled overlay for a floor leg. */
   private enterLeg(playback: ActiveRoutePlayback, index: number): void {
     if (playback.legIndex === index) return;
     playback.legIndex = index;
-    playback.snapCamera = true;
     const leg = playback.legs[index] as PlaybackLeg;
+    if (leg.kind === "transition") return; // keeps the previous floor's travelled line, fully drawn
+    playback.snapCamera = true;
 
     if (playback.traveledMesh) {
       this.playbackGroup.remove(playback.traveledMesh);
@@ -581,8 +750,19 @@ export class Renderer3D {
     );
     playback.traveledMesh.geometry.setDrawRange(0, 0);
     this.playbackGroup.add(playback.traveledMesh);
+  }
 
-    this.callbacks.onRouteLegChange?.(leg.floorId, index);
+  /** Asks the host to show `floorId` when playback reaches a different floor (or floor leg). */
+  private showPlaybackFloor(
+    playback: ActiveRoutePlayback,
+    floorId: string | undefined,
+    walkIndex: number,
+  ): void {
+    const key = `${floorId ?? ""}|${walkIndex}`;
+    if (playback.shownKey === key) return;
+    playback.shownKey = key;
+    playback.snapCamera = true;
+    this.callbacks.onRouteLegChange?.(floorId, walkIndex);
   }
 
   /** Places marker, travelled overlay and (optionally) the follow camera at the current distance. */
@@ -590,18 +770,23 @@ export class Renderer3D {
     const playback = this.routePlayback;
     if (!playback) return;
     this.enterLeg(playback, this.legIndexAt(playback, playback.distance));
-    // onRouteLegChange may have stopped or replaced playback (e.g. the host failed to switch floors).
-    if (this.routePlayback !== playback) return;
     const leg = playback.legs[playback.legIndex] as PlaybackLeg;
     const local = playback.distance - leg.start;
-    const here = sampleRoutePath(leg.path, local);
-    const point = this.toGroundVector(here.point, ROUTE_LINE_HEIGHT_METERS);
+    const view = this.playbackView(leg, local);
+    this.showPlaybackFloor(playback, view.floorId, view.walkIndex);
+    // onRouteLegChange may have stopped or replaced playback (e.g. the host failed to switch floors).
+    if (this.routePlayback !== playback) return;
+    this.renderer.domElement.style.opacity = view.fade > 0 ? String(1 - view.fade) : "";
+    const point = this.toGroundVector(view.point, ROUTE_LINE_HEIGHT_METERS + view.lift);
 
     if (playback.markerMesh) {
       playback.markerMesh.position.set(point.x, point.y + MARKER_HEIGHT_METERS, point.z);
     }
     if (playback.traveledMesh && playback.traveledPath) {
-      const done = segmentIndexAt(playback.traveledPath, local);
+      const done =
+        leg.kind === "walk"
+          ? segmentIndexAt(playback.traveledPath, local)
+          : playback.traveledPath.points.length;
       playback.traveledMesh.geometry.setDrawRange(0, done * 6);
     }
 
@@ -609,26 +794,31 @@ export class Renderer3D {
     if (playback.paused && !driveCameraWhilePaused) return;
 
     // Aim a little ahead along the path so the camera starts turning before a corner.
-    const ahead = sampleRoutePath(leg.path, local + CAMERA_LOOK_AHEAD_METERS).point;
-    let dx = ahead.x - here.point.x;
-    let dy = ahead.y - here.point.y;
-    if (Math.hypot(dx, dy) < 0.05) {
-      dx = here.direction.x;
-      dy = here.direction.y;
-    }
-    // Map (x, y) -> three.js (x, -y): yaw is measured in the XZ plane.
-    const targetYaw = Math.atan2(-dy, dx);
-    if (playback.snapCamera) {
-      playback.headingYaw = targetYaw;
-    } else {
-      const delta = wrapAngle(targetYaw - playback.headingYaw);
-      playback.headingYaw += delta * (1 - Math.exp(-dt * CAMERA_HEADING_RESPONSE));
+    // A floor change keeps the heading it arrived with.
+    if (leg.kind === "walk") {
+      const ahead = sampleRoutePath(leg.path, local + CAMERA_LOOK_AHEAD_METERS).point;
+      let dx = ahead.x - view.point.x;
+      let dy = ahead.y - view.point.y;
+      if (Math.hypot(dx, dy) < 0.05 && view.direction) {
+        dx = view.direction.x;
+        dy = view.direction.y;
+      }
+      // Map (x, y) -> three.js (x, -y): yaw is measured in the XZ plane.
+      const targetYaw = Math.atan2(-dy, dx);
+      if (playback.snapCamera) {
+        playback.headingYaw = targetYaw;
+      } else {
+        const delta = wrapAngle(targetYaw - playback.headingYaw);
+        playback.headingYaw += delta * (1 - Math.exp(-dt * CAMERA_HEADING_RESPONSE));
+      }
     }
     const heading = new THREE.Vector3(
       Math.cos(playback.headingYaw),
       0,
       Math.sin(playback.headingYaw),
     );
+    // During a floor change the camera rides with the marker instead of easing after it.
+    const snap = playback.snapCamera || leg.kind === "transition";
 
     if (playback.cameraMode === "third") {
       const target = this.followLookTarget(playback);
@@ -636,8 +826,8 @@ export class Renderer3D {
         .clone()
         .addScaledVector(heading, -THIRD_PERSON_BACK_METERS)
         .setY(point.y + THIRD_PERSON_HEIGHT_METERS);
-      this.pullInFrontOfWalls(target, desired);
-      if (playback.snapCamera) this.camera.position.copy(desired);
+      if (leg.kind === "walk") this.pullInFrontOfWalls(target, desired);
+      if (snap) this.camera.position.copy(desired);
       else this.camera.position.lerp(desired, 1 - Math.exp(-dt * CAMERA_POSITION_RESPONSE));
       this.camera.lookAt(target);
     } else {
@@ -651,8 +841,8 @@ export class Renderer3D {
   /** Where the follow camera looks: just above the current playback position. */
   private followLookTarget(playback: ActiveRoutePlayback): THREE.Vector3 {
     const leg = playback.legs[Math.max(0, playback.legIndex)] as PlaybackLeg;
-    const here = sampleRoutePath(leg.path, playback.distance - leg.start).point;
-    return this.toGroundVector(here, THIRD_PERSON_LOOK_HEIGHT_METERS);
+    const view = this.playbackView(leg, playback.distance - leg.start);
+    return this.toGroundVector(view.point, THIRD_PERSON_LOOK_HEIGHT_METERS + view.lift);
   }
 
   /** Moves `camera` toward `target` so no wall sits between them. Mutates `camera`. */

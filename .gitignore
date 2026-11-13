@@ -31,3 +31,6 @@ pnpm-debug.log*
 .idea/
 
 /docs
+
+# Real drawings used for vectorization scoring (often confidential)
+packages/vectorize/eval/cases/

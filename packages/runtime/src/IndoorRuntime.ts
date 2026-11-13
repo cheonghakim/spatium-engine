@@ -5,6 +5,7 @@ import {
   createFloor,
   distance,
   distanceToSegment,
+  edgeDuration,
   findPOIInProject,
   findRoute,
   prepareRoutingGraph,
@@ -789,7 +790,7 @@ export class IndoorRuntime {
         sitePosition: node.position,
       });
 
-    type Leg = { floorId: string; points: Point[] };
+    type Leg = { floorId: string; points: Point[]; arrival?: NonNullable<RouteLeg["arrival"]> };
     const legs: Leg[] = [];
     let current = null as Leg | null;
     const ids = this.route.nodeIds;
@@ -801,6 +802,8 @@ export class IndoorRuntime {
       }
       if (current?.floorId !== node.floorId) {
         current = { floorId: node.floorId, points: [] };
+        const arrival = i > 0 ? this.floorChangeArrival(ids[i - 1]!, ids[i]!, i - 1) : undefined;
+        if (arrival) current.arrival = arrival;
         legs.push(current);
         // Entering the site from a building: start the outdoor leg at that door.
         const previous = i > 0 ? nodes.get(ids[i - 1]!) : undefined;
@@ -827,6 +830,41 @@ export class IndoorRuntime {
         const any = !!obstacles?.walls?.length || !!obstacles?.polygons?.length;
         return any ? { ...leg, obstacles: obstacles! } : leg;
       });
+  }
+
+  /**
+   * How the route gets from node `fromId` to node `toId` (consecutive on the
+   * route, on different building floors): the edge's kind, its travel time
+   * and whether it goes up or down. Undefined when either end is outdoors —
+   * walking out of a door needs no floor-change transition.
+   */
+  private floorChangeArrival(
+    fromId: string,
+    toId: string,
+    edgeIndex: number,
+  ): RouteLeg["arrival"] | undefined {
+    if (!this.project || !this.route) return undefined;
+    const floorOf = (nodeId: string) => {
+      for (const building of this.project!.buildings)
+        for (const floor of building.floors)
+          if (floor.navigation.nodes.some((n) => n.id === nodeId)) return floor;
+      return undefined;
+    };
+    const from = floorOf(fromId),
+      to = floorOf(toId);
+    if (!from || !to || from.id === to.id) return undefined;
+    const options = this.routeQuery?.options ?? {};
+    const edgeId = this.route.edgeIds[edgeIndex];
+    const edge = this.getRoutingGraph(options)
+      .adjacency.get(fromId)
+      ?.find((n) => n.edge.id === edgeId)?.edge;
+    const up =
+      to.elevation !== from.elevation ? to.elevation > from.elevation : to.level > from.level;
+    return {
+      via: edge?.type ?? "walk",
+      ...(edge ? { seconds: edgeDuration(edge, options.walkingSpeed) } : {}),
+      direction: up ? "up" : "down",
+    };
   }
 
   /** Playback reached a leg on another floor: show it without stopping playback (unlike setFloor). */

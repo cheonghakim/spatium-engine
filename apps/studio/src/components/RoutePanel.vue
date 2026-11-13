@@ -156,6 +156,15 @@ function findRoute(): void {
     : diagnoseRoute(props.editor.project, from, to, routeOptions());
 }
 
+// Toggling an option re-runs the route already on screen — otherwise the
+// old route stays drawn and the option looks like it did nothing.
+watch(
+  () => [form.avoidStairs, form.requireAccessible, form.preferElevator],
+  () => {
+    if (preview.value) findRoute();
+  },
+);
+
 function swap(): void {
   [form.start, form.end] = [form.end, form.start];
   if (preview.value) findRoute();

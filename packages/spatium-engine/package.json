@@ -49,7 +49,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsup"
+    "build": "tsup",
+    "prepublishOnly": "pnpm --filter \"{.}...\" run build"
   },
   "peerDependencies": {
     "three": "^0.186.0"

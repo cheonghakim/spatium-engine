@@ -146,6 +146,62 @@ describe("Renderer3D", () => {
       renderer.dispose();
     });
 
+    it("animates a floor change between legs reached by elevator", () => {
+      const onRouteLegChange = vi.fn();
+      const renderer = new Renderer3D(container, { onRouteLegChange });
+      const withLift = [
+        legs[0]!,
+        {
+          ...legs[1]!,
+          arrival: { via: "elevator" as const, seconds: 24, direction: "up" as const },
+        },
+      ];
+      renderer.playRoute(withLift, { curve: "straight", cameraMode: "third" });
+      // 24 s ride → shown for 3 s (compressed) = 3.9 m of timeline between the 10 m and 30 m legs.
+      const total = 10 + 3 * 1.3 + 30;
+      const at = (metres: number) => renderer.seekRoute(metres / total);
+      const marker = () =>
+        (renderer as unknown as { routePlayback: { markerMesh: { position: { y: number } } } })
+          .routePlayback.markerMesh.position.y;
+      const opacity = () => renderer.getDomElement().style.opacity;
+
+      at(10 + 3.9 * 0.25); // rising out of 1F
+      let state = renderer.getRoutePlaybackState()!;
+      expect(state.transition).toMatchObject({
+        via: "elevator",
+        direction: "up",
+        fromFloorId: "f1",
+        toFloorId: "f2",
+      });
+      expect(state.transition!.progress).toBeCloseTo(0.25);
+      expect(state).toMatchObject({
+        floorId: "f1",
+        legIndex: 0,
+        legCount: 2,
+        distance: 10,
+        totalDistance: 40,
+      });
+      const rising = marker();
+      expect(rising).toBeGreaterThan(0.5);
+      expect(Number(opacity())).toBeLessThan(1);
+
+      at(10 + 3.9 * 0.75); // coming up into 2F from below
+      state = renderer.getRoutePlaybackState()!;
+      expect(state).toMatchObject({ floorId: "f2", legIndex: 1, distance: 10 });
+      expect(onRouteLegChange).toHaveBeenLastCalledWith("f2", 1);
+      expect(marker()).toBeLessThan(0);
+
+      at(20); // walking on 2F again: no transition, no fade
+      state = renderer.getRoutePlaybackState()!;
+      expect(state.transition).toBeUndefined();
+      expect(state.distance).toBeCloseTo(20 - 3.9);
+      expect(opacity()).toBe("");
+
+      renderer.stopRoute();
+      expect(opacity()).toBe("");
+      renderer.dispose();
+    });
+
     it("pauses, resumes and changes speed; remaining time follows the speed", () => {
       const renderer = new Renderer3D(container);
       renderer.playRoute(legs, { curve: "straight", cameraMode: "overview" });

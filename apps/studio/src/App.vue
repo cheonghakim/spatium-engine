@@ -469,7 +469,7 @@ const tools = [
     label: "선택",
     icon: mdiCursorDefault,
     key: "V",
-    hint: "객체를 클릭해 속성을 수정하세요. Shift/Ctrl+클릭: 다중 선택 · 드래그: 영역 선택 · Delete: 선택 항목 삭제 · Space/휠 클릭 드래그: 화면 이동",
+    hint: "클릭: 선택 · 객체 드래그: 이동(선택한 것 전체, 방은 먼저 선택) · 빈 곳/방 안 드래그: 영역 선택 · Shift/Ctrl+클릭: 다중 선택 · Ctrl+A: 전체 선택 · 방향키: 0.1m 이동(Shift 1m) · Delete: 삭제 · Space/휠 클릭 드래그: 화면 이동",
   },
   {
     id: "polygon",
@@ -539,7 +539,7 @@ const tools = [
     label: "감지 결과 수정",
     icon: mdiAutoFix,
     key: "B",
-    hint: "벽 클릭·드래그: 이동 · 끝점 드래그: 길이 수정 · Shift/Ctrl+클릭·빈 곳 드래그: 다중 선택 · Delete: 선택 항목 제외 · Shift(끝점 드래그): 수평/수직 · Alt: 붙이기 해제",
+    hint: "드래그: 선택 항목 이동(이어진 벽·방이 따라옴) · 끝점 드래그: 길이 수정 · 빈 곳/방 안 드래그: 영역 선택 · Shift/Ctrl+클릭: 다중 선택 · Ctrl+A: 전체 선택 · 방향키: 미세 이동 · Delete: 제외 · Alt: 붙이기·연결 해제",
   },
 ];
 type Tool = (typeof tools)[number];
@@ -561,6 +561,26 @@ const groupedTools = computed(() =>
   })),
 );
 const activeTool = computed(() => tools.find((t) => t.id === ui.activeToolId)!);
+
+/** The canvas tool-hint card can be hidden; remembered per browser. */
+const HUD_HIDDEN_KEY = "spatium-studio:tool-hud-hidden";
+function readHudHidden(): boolean {
+  try {
+    return window.localStorage.getItem(HUD_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+const hudHidden = ref(readHudHidden());
+function setHudHidden(hidden: boolean): void {
+  hudHidden.value = hidden;
+  try {
+    if (hidden) window.localStorage.setItem(HUD_HIDDEN_KEY, "1");
+    else window.localStorage.removeItem(HUD_HIDDEN_KEY);
+  } catch {
+    // Storage unavailable: the choice just lasts for this session.
+  }
+}
 /** In the site view only these tools apply (the outdoor graph has no spaces or walls). */
 const SITE_VIEW_TOOLS = new Set(["select", "navigation", "site-building"]);
 const siteView = computed(() => {
@@ -1043,10 +1063,29 @@ function selectRightTab(id: string): void {
           <StudioCanvas v-if="!show3d" ref="canvas" :editor="editor" />
           <Preview3D v-else :editor="editor" />
 
-          <div v-if="!show3d" class="tool-hud">
+          <div v-if="!show3d && !hudHidden" class="tool-hud">
             <strong>{{ activeTool.label }}</strong>
+            <button
+              class="tool-hud-close"
+              type="button"
+              aria-label="도구 안내 숨기기"
+              title="도구 안내 숨기기"
+              @click="setHudHidden(true)"
+            >
+              ×
+            </button>
             <p>{{ activeTool.hint }}</p>
           </div>
+          <button
+            v-else-if="!show3d"
+            class="tool-hud-show"
+            type="button"
+            aria-label="도구 안내 보기"
+            :title="`도구 안내 보기 · ${activeTool.label}`"
+            @click="setHudHidden(false)"
+          >
+            ?
+          </button>
 
           <div v-if="empty && !siteView && !show3d && ui.activeToolId === 'select'" class="welcome">
             <span class="hint">시작하기</span>
@@ -1476,8 +1515,39 @@ function selectRightTab(id: string): void {
 }
 .tool-hud strong {
   display: block;
+  padding-right: 20px;
   font-size: var(--font-size-secondary);
   color: var(--text-primary);
+}
+.tool-hud-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  pointer-events: auto;
+}
+.tool-hud-close:hover {
+  color: var(--text-primary);
+}
+.tool-hud-show {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--overlay);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 .tool-hud p {
   margin: 3px 0 0;

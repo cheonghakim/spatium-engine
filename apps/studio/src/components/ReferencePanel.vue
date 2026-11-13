@@ -26,6 +26,7 @@ let latestJobId = 0;
 let activeJob: AnalysisJob | null = null;
 const uploadError = ref("");
 const settings = reactive({
+  method: "regions" as "lines" | "regions",
   autoThreshold: true,
   threshold: 128,
   minSegmentLengthPx: 25,
@@ -181,10 +182,25 @@ function cancelVectorize(): void {
         <span>{{ Math.round(reference.opacity * 100) }}%</span>
       </label>
 
-      <p class="scale-info">축척: {{ reference.metersPerPixel.toFixed(4) }} m/px</p>
+      <p class="scale-info">
+        축척: {{ reference.metersPerPixel.toFixed(4) }} m/px · 원점: ({{
+          reference.origin.x.toFixed(3)
+        }}, {{ reference.origin.y.toFixed(3) }})
+      </p>
       <p class="hint">Calibrate 툴로 두 점을 클릭하고 실제 거리를 입력하면 축척이 보정됩니다.</p>
 
       <h3>자동 벡터화</h3>
+      <label class="method"
+        >인식 방식
+        <select v-model="settings.method" data-testid="vectorize-method">
+          <option value="lines">선 기준</option>
+          <option value="regions">영역 기준 (기본)</option>
+        </select>
+      </label>
+      <p v-if="settings.method === 'regions'" class="hint">
+        닫힌 바닥 영역에서 출발해 벽을 찾습니다. 축척 보정이 맞아야 하며, 실내를 찾지 못하면 선
+        기준으로 대신 분석합니다. 아래 감지 설정은 밝기 기준만 적용됩니다.
+      </p>
       <div class="presets">
         <button @click="preset('balanced')">기본</button
         ><button @click="preset('clean')">가구 선 줄이기</button
@@ -266,6 +282,16 @@ function cancelVectorize(): void {
 </template>
 
 <style scoped>
+.method {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.method select {
+  flex: 1;
+}
+
 .presets {
   display: flex;
   flex-wrap: wrap;

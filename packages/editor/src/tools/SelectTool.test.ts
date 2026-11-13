@@ -47,7 +47,7 @@ const down = (
   extra: Partial<{ shiftKey: boolean; button: number }> = {},
 ) => ({
   worldPoint: { x, y },
-  screenPoint: { x, y },
+  screenPoint: { x: x * 50, y: y * 50 },
   button: 0,
   shiftKey: false,
   ctrlKey: false,
@@ -96,7 +96,10 @@ describe("SelectTool", () => {
     const { context } = createContext(floor);
     const tool = new SelectTool(context);
 
+    // A room is selected on release, so a box started inside it doesn't light it up.
     tool.onPointerDown(down(2, 2));
+    expect(context.selection.current).toEqual([]);
+    tool.onPointerUp();
 
     expect(context.selection.current).toEqual([{ id: space.id }]);
   });
@@ -130,7 +133,9 @@ describe("SelectTool", () => {
     tool.onPointerDown(down(1, 1));
     expect(context.selection.current).toEqual([{ id: poiA.id }]);
 
+    tool.onPointerUp();
     tool.onPointerDown(down(5, 5, { shiftKey: true }));
+    tool.onPointerUp();
     expect(context.selection.current).toEqual([{ id: poiA.id }, { id: poiB.id }]);
   });
 

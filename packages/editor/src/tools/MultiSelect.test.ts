@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   createBuilding,
   createEmptyProject,
+  createEntrance,
   createFloor,
+  createPOI,
   createNavigationEdge,
   createNavigationNode,
   createSpace,
@@ -125,6 +127,112 @@ describe("multi-selection (Select tool)", () => {
   });
 });
 
+describe("moving objects (Select tool)", () => {
+  const square = (floorId: string, x: number, y: number, size: number) =>
+    createSpace(floorId, [
+      { x, y },
+      { x: x + size, y },
+      { x: x + size, y: y + size },
+      { x, y: y + size },
+    ]);
+
+  it("drags a whole multi-selection — walls, a room, a POI — as one undo step", () => {
+    const { editor, floor } = setupFloor();
+    const room = square(floor.id, 0, 0, 4);
+    floor.spaces.push(room);
+    const wall = createWall(floor.id, { x: 10, y: 0 }, { x: 14, y: 0 });
+    floor.walls.push(wall);
+    const poi = createPOI(floor.id, { x: 12, y: 3 });
+    floor.pois.push(poi);
+    editor.selection.setAll([{ id: room.id }, { id: wall.id }, { id: poi.id }]);
+
+    // Grab the wall (already selected) and drag: everything selected moves.
+    drag(editor, [12, 0], [13, 2]);
+    expect(editor.selection.current).toHaveLength(3);
+    expect(wall.start).toEqual({ x: 11, y: 2 });
+    expect(room.polygon[0]).toEqual({ x: 1, y: 2 });
+    expect(poi.position).toEqual({ x: 13, y: 5 });
+
+    editor.undo();
+    expect(wall.start).toEqual({ x: 10, y: 0 });
+    expect(room.polygon[0]).toEqual({ x: 0, y: 0 });
+    expect(poi.position).toEqual({ x: 12, y: 3 });
+  });
+
+  it("moves a room once it is selected; an unselected room starts a box instead", () => {
+    const { editor, floor } = setupFloor();
+    const room = square(floor.id, 0, 0, 4);
+    floor.spaces.push(room);
+
+    drag(editor, [1, 1], [3, 3]); // not selected yet → box, room stays put
+    expect(room.polygon[0]).toEqual({ x: 0, y: 0 });
+
+    editor.handlePointerDown(at(2, 2));
+    editor.handlePointerUp(at(2, 2)); // click selects it
+    drag(editor, [2, 2], [5, 2]);
+    expect(room.polygon[0]).toEqual({ x: 3, y: 0 });
+  });
+
+  it("a click (no drag) never nudges, and narrows a multi-selection to the clicked object", () => {
+    const { editor, floor } = setupFloor();
+    const a = createWall(floor.id, { x: 0, y: 0 }, { x: 4, y: 0 });
+    const b = createWall(floor.id, { x: 0, y: 2 }, { x: 4, y: 2 });
+    floor.walls.push(a, b);
+    editor.selection.setAll([{ id: a.id }, { id: b.id }]);
+    editor.handlePointerDown(at(2, 0));
+    editor.handlePointerMove(at(2.02, 0)); // 1 px of jitter
+    editor.handlePointerUp(at(2.02, 0));
+    expect(a.start).toEqual({ x: 0, y: 0 });
+    expect(editor.selection.current.map((e) => e.id)).toEqual([a.id]);
+    expect(editor.history.canUndo).toBe(false);
+  });
+
+  it("carries the doors hosted on a moved wall", () => {
+    const { editor, floor } = setupFloor();
+    const wall = createWall(floor.id, { x: 0, y: 0 }, { x: 4, y: 0 });
+    floor.walls.push(wall);
+    const door = createEntrance(floor.id, { x: 2, y: 0 }, "door");
+    door.wallId = wall.id;
+    floor.entrances.push(door);
+    drag(editor, [1, 0], [1, 1]);
+    expect(wall.start).toEqual({ x: 0, y: 1 });
+    expect(door.position).toEqual({ x: 2, y: 1 });
+  });
+
+  it("Shift+drag starting on an object adds a box; Shift+click toggles", () => {
+    const { editor, floor } = setupFloor();
+    const a = createWall(floor.id, { x: 0, y: 0 }, { x: 4, y: 0 });
+    const b = createWall(floor.id, { x: 0, y: 2 }, { x: 4, y: 2 });
+    floor.walls.push(a, b);
+    // Press on wall a's end, drag a window box around both walls.
+    drag(editor, [0, 0], [5, 3], { shiftKey: true });
+    expect(a.start).toEqual({ x: 0, y: 0 }); // nothing moved
+    expect(editor.selection.current.map((e) => e.id)).toEqual([a.id, b.id]);
+    editor.handlePointerDown(at(2, 0, { shiftKey: true }));
+    editor.handlePointerUp(at(2, 0, { shiftKey: true }));
+    expect(editor.selection.current.map((e) => e.id)).toEqual([b.id]);
+  });
+
+  it("arrow keys nudge the selection, Ctrl+A selects all, Escape twice clears", () => {
+    const { editor, floor } = setupFloor();
+    const wall = createWall(floor.id, { x: 0, y: 0 }, { x: 4, y: 0 });
+    const poi = createPOI(floor.id, { x: 1, y: 1 });
+    floor.walls.push(wall);
+    floor.pois.push(poi);
+    editor.handleKeyDown({ key: "a", shiftKey: false, ctrlKey: true, altKey: false });
+    expect(editor.selection.current).toHaveLength(2);
+    editor.handleKeyDown(key("ArrowRight"));
+    editor.handleKeyDown({ key: "ArrowDown", shiftKey: true, ctrlKey: false, altKey: false });
+    expect(wall.start.x).toBeCloseTo(0.1);
+    expect(wall.start.y).toBeCloseTo(1);
+    expect(poi.position.x).toBeCloseTo(1.1);
+    editor.undo();
+    expect(wall.start.y).toBeCloseTo(0);
+    editor.handleKeyDown(key("Escape"));
+    expect(editor.selection.current).toHaveLength(0);
+  });
+});
+
 describe("multi-selection (vectorization draft review)", () => {
   function setupDraft() {
     const { editor, floor } = setupFloor();
@@ -168,6 +276,43 @@ describe("multi-selection (vectorization draft review)", () => {
 
     editor.handleKeyDown(key("Escape"));
     expect(editor.draft.selectedIds).toEqual([]);
+  });
+
+  it("drags a multi-selection of draft walls together; joined walls stretch", () => {
+    const { editor, walls } = setupDraft();
+    // A vertical wall joining the top and middle walls at x=4.
+    editor.draft.setDraft(
+      [
+        ...walls.map((w) => ({ start: w.start, end: w.end, thickness: w.thickness })),
+        { start: { x: 4, y: 0 }, end: { x: 4, y: 2 }, thickness: 0.2 },
+      ],
+      [],
+      [],
+      editor.getActiveFloor()!.id,
+    );
+    const [top, middle, bottom, joint] = editor.draft.current!.walls;
+    editor.draft.setSelection([top!.id, middle!.id]);
+    drag(editor, [2, 0], [2, 1]);
+    const after = editor.draft.current!.walls;
+    expect(after[0]!.start).toEqual({ x: 0, y: 1 });
+    expect(after[1]!.start).toEqual({ x: 0, y: 3 });
+    expect(after[2]!.start).toEqual(bottom!.start); // not selected
+    // The joining wall's ends followed both moved walls.
+    expect(after[3]!.start).toEqual({ x: 4, y: 1 });
+    expect(after[3]!.end).toEqual({ x: 4, y: 3 });
+    expect(joint).toBeDefined();
+    editor.undo();
+    expect(editor.draft.current!.walls[0]!.start).toEqual({ x: 0, y: 0 });
+  });
+
+  it("Ctrl+A selects every draft entry and arrows nudge them", () => {
+    const { editor } = setupDraft();
+    editor.handleKeyDown({ key: "a", shiftKey: false, ctrlKey: true, altKey: false });
+    expect(editor.draft.selectedIds).toHaveLength(3);
+    editor.handleKeyDown(key("ArrowUp"));
+    expect(editor.draft.current!.walls[0]!.start.y).toBeCloseTo(-0.1);
+    editor.undo();
+    expect(editor.draft.current!.walls[0]!.start.y).toBeCloseTo(0);
   });
 
   it("bulk include/exclude via setAccepted is a no-op (no history entry) when nothing changes", () => {

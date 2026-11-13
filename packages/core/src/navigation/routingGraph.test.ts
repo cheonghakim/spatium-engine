@@ -3,10 +3,12 @@ import {
   createBuilding,
   createConnector,
   createEmptyProject,
+  createEntrance,
   createFloor,
   createNavigationEdge,
   createNavigationNode,
   createSite,
+  createSpace,
 } from "../factories.js";
 import type { Connector } from "../types/connector.js";
 import type { NavigationNode } from "../types/navigation.js";
@@ -16,6 +18,7 @@ import {
   buildRoutingGraph,
   connectorRoutingEdges,
   DEFAULT_STOREY_HEIGHT,
+  floorRoutingEdges,
   resolveConnectorTiming,
   siteRoutingEdges,
 } from "./routingGraph.js";
@@ -285,5 +288,85 @@ describe("siteRoutingEdges", () => {
       lobby[0]!.id,
     );
     expect(route?.distance).toBeCloseTo(900);
+  });
+});
+
+describe("stairs drawn on the plan (floorRoutingEdges)", () => {
+  /**
+   * Two ways from A (0,0) to B (10,0): straight across over a staircase
+   * (via S at 5,0 — 10 m), or around the stair through C (5,6) — ~15.6 m.
+   * All edges are plain "walk" edges, as the path tool draws them.
+   */
+  function plan(stair: "element" | "space") {
+    const project = createEmptyProject("Stairs");
+    const building = createBuilding("A");
+    const floor = createFloor("1F", 1);
+    building.floors.push(floor);
+    project.buildings.push(building);
+    const node = (x: number, y: number) => {
+      const n = createNavigationNode(floor.id, { x, y });
+      floor.navigation.nodes.push(n);
+      return n;
+    };
+    const a = node(0, 0),
+      s = node(5, 0),
+      b = node(10, 0),
+      c = node(5, 6);
+    const link = (p: NavigationNode, q: NavigationNode) =>
+      floor.navigation.edges.push(
+        createNavigationEdge(
+          p.id,
+          q.id,
+          Math.hypot(q.position.x - p.position.x, q.position.y - p.position.y),
+        ),
+      );
+    link(a, s);
+    link(s, b);
+    link(a, c);
+    link(c, b);
+    if (stair === "element") {
+      const element = createEntrance(floor.id, { x: 5, y: 0 }, "stairs");
+      Object.assign(element, { width: 1.2, depth: 3, rotation: 0 });
+      floor.entrances.push(element);
+    } else {
+      floor.spaces.push(
+        createSpace(
+          floor.id,
+          [
+            { x: 4, y: -1 },
+            { x: 6, y: -1 },
+            { x: 6, y: 1 },
+            { x: 4, y: 1 },
+          ],
+          "stairs",
+        ),
+      );
+    }
+    return { project, a, b, c };
+  }
+
+  for (const stair of ["element", "space"] as const) {
+    it(`"avoid stairs" and "accessible only" detour around a stair ${stair}`, () => {
+      const { project, a, b, c } = plan(stair);
+      const graph = buildRoutingGraph(project);
+      const direct = findShortestPath(graph, a.id, b.id);
+      expect(direct?.nodeIds).toHaveLength(3);
+      expect(direct?.nodeIds).not.toContain(c.id);
+      for (const options of [{ avoidStairs: true }, { requireAccessible: true }]) {
+        const detour = findShortestPath(graph, a.id, b.id, options);
+        expect(detour?.nodeIds).toEqual([a.id, c.id, b.id]);
+      }
+    });
+  }
+
+  it("leaves edges that only end at the stair foot, and hand-typed edges, alone", () => {
+    const { project } = plan("element");
+    const floor = project.buildings[0]!.floors[0]!;
+    floor.entrances[0]!.position = { x: 7, y: 0 }; // stair now spans x 5.5..8.5
+    floor.navigation.edges[0]!.type = "elevator";
+    const edges = floorRoutingEdges(floor);
+    expect(edges[0]!.type).toBe("elevator"); // kept as typed
+    expect(edges[1]!.type).toBe("stairs"); // S(5,0)→B(10,0) runs over it
+    expect(edges[2]!.type).toBe("walk");
   });
 });
